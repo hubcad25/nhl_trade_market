@@ -6,9 +6,9 @@ This project seeks to give a prediction of the trade package that a NHL player c
 For example, if I wanted to know what could currently fetch the Rangers if they were to trade Alexis Lafrenière, the model would do the following steps:
 - Search for players with a similar profile to Alexis Lafrenière who were traded
 - Find patterns in the types of trades in which these players have been involved
-        - Was the player the main piece of the trade?
-        - How many assets are included?
-        - What types of assets? Established offensive top6 player? 19 YO prospect drafted in the late 1st round? etc.
+    - Was the player the main piece of the trade?
+    - How many assets are included?
+    - What types of assets? Established offensive top6 player? 19 YO prospect drafted in the late 1st round? etc.
 - Predict a list of different patterns of possible packages (and their probability)
 - Suggest packages following those patterns in the current NHL
 
