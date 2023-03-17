@@ -25,3 +25,5 @@ The repo is currently organized through the following folders:
 - **code**: contains all relevant code files. Internally organized by project.
 - **documentation**: contains relevant documentation
 
+# Package
+There might be a reflexion to be had for developing a package used to access data in the different databases.
