@@ -14,7 +14,7 @@ For example, if I wanted to know what could currently fetch the Rangers if they 
 
 # Outline of the projects
 The global projects for this purpose to be materialized are the following:
-- [] Build a relational database containing players and teams data
+- [X] Build a relational database containing players and teams data
 - [] Build a dataset containing NHL trades
 - [] Train a transformer machine learning model
 
