@@ -6,14 +6,14 @@ library(request)
 # Functions ---------------------------------------------------------------
 
 # This function calls the nhl api
-get_list_of_infos <- function(player_id){
+fetch_list_of_infos <- function(player_id){
   player_id <- as.character(player_id)
   url <- paste0("https://statsapi.web.nhl.com/api/v1/people/", player_id)
   list <- api(url) %>% http()
   return(list)
 }
 
-#list <- get_list_of_infos(8452923)
+#list <- fetch_list_of_infos(nhl_ids[1])
 
 ## These next functions get information in the list returned by get_list_of_infos
 get_player_fullname <- function(list){
@@ -78,13 +78,11 @@ get_player_number <- function(list){
   return(as.numeric(list$people[[1]]$primaryNumber))
 }
 
-get_player_positions(list)
-
 get_player_laterality <- function(list){
   return(list$people[[1]]$shootsCatches)
 }
 
-is_player_active <- function(list){
+get_player_active <- function(list){
   return(list$people[[1]]$active)
 }
 
@@ -92,17 +90,8 @@ is_player_active <- function(list){
 # Applying functions to a list of nhl ids ---------------------------------
 nhl_ids <- readRDS("data/sample_nhl_ids.rds")
 
-for (i in 1:length(nhl_ids)){
-  #i <- 1
-  nhl_id <- nhl_ids[i]
-  listi <- get_list_of_infos(nhl_id)
-  if (i == 1){
-    list <- list()
-    list[[i]] <- listi
-  } else {
-    list[[i]] <- listi
-  }
-  if (i %% 10 == 0){
-    print(i)
-  }
-}
+list <- pbapply::pblapply(nhl_ids, fetch_list_of_infos)
+
+env <- lsf.str()
+fcts <- env[grepl("get", env)]
+
