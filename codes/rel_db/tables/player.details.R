@@ -118,7 +118,7 @@ get_player_active <- function(list){
 
 # Create dataframe skeleton -----------------------------------------------
 
-df <- data.frame(nhl_id = nhl_ids)
+df <- data.frame(id_player_league = nhl_ids)
 
 
 # Applying functions to a list of nhl ids ---------------------------------
