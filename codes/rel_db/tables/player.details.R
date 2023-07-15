@@ -25,44 +25,75 @@ fetch_players_infos <- function(player_ids){
   return(pbapply::pblapply(player_ids, fetch_single_player_infos))
 }
 
+
 ## These next functions get information in a single player list
 get_player_fullname <- function(list){
+  if (is.null(list$fullName)){
+    return(NA)
+  }
   return(list$fullName)
 }
 
 get_player_firstName <- function(list){
+  if (is.null(list$firstName)){
+    return(NA)
+  }
   return(list$firstName)
 }
 
 get_player_lastName <- function(list){
+  if (is.null(list$lastName)){
+    return(NA)
+  }
   return(list$lastName)
 }
 
 get_player_positions <- function(list){
+  if (is.null(list$primaryPosition$abbreviation)){
+    return(NA)
+  }
   return(list$primaryPosition$abbreviation)
 }
 
 get_player_positions_type <- function(list){
+  if (is.null(list$primaryPosition$type)){
+    return(NA)
+  }
   return(list$primaryPosition$type)
 }
 
 get_player_nationality <- function(list){
+  if (is.null(list$nationality)){
+    return(NA)
+  }
   return(list$nationality)
 }
 
 get_player_birthCountry <- function(list){
+  if (is.null(list$birthCountry)){
+    return(NA)
+  }
   return(list$birthCountry)
 }
 
 get_player_dob <- function(list){
+  if (is.null(list$birthDate)){
+    return(NA)
+  }
   return(list$birthDate)
 }
 
 get_player_city <- function(list){
+  if (is.null(list$birthCity)){
+    return(NA)
+  }
   return(list$birthCity)
 }
 
 get_player_stateProvince <- function(list){
+  if (is.null(list$birthStateProvince)){
+    return(NA)
+  }
   return(list$birthStateProvince)
 }
 
@@ -89,6 +120,9 @@ get_player_inches <- function(list){
 }
 
 get_player_weight <- function(list){
+  if (is.null(list$weight)){
+    return(NA)
+  }
   return(list$weight)
 }
 
@@ -102,10 +136,16 @@ get_player_number <- function(list){
 }
 
 get_player_laterality <- function(list){
+  if (is.null(list$shootsCatches)){
+    return(NA)
+  }
   return(list$shootsCatches)
 }
 
 get_player_active <- function(list){
+  if (is.null(list$active)){
+    return(NA)
+  }
   return(list$active)
 }
 
