@@ -174,3 +174,19 @@ for (f in fcts) {
   df[[col]] <- sapply(list, function(x) do.call(f, list(x)))
   print(col)
 }
+
+
+# Generate id_player ------------------------------------------------------
+
+## get year of birth
+yob <- lubridate::year(df$dob)
+
+## get first letter of first name in lowercase
+fname <- tolower(substr(df$firstName, 1, 1))
+
+## get last name in lowercase
+lname <- tolower(df$lastName)
+
+## concatenate in df
+df$id_player <- paste0(df$id_player_league, fname, lname, yob)
+
