@@ -14,12 +14,12 @@ For example, if I wanted to know what could currently fetch the Rangers if they 
 
 # Outline of the projects
 The global projects for this purpose to be materialized are the following:
-- [] Build a relational database containing players and teams data (postgres sql)
+- [] Build a relational database containing players data (postgres sql)
     - [] Automatic collection
     - [] Manually input data through a UI when necessary
 - [] Build a function that retrieves data on a player at a certain point in time (in the relational db and apis), returns a json
-- [] Build a function that transforms this data into a "sentence"
-- [] Finetune a feature extractor that transforms this sentence into a set of numerical features
+- [] Build a function that transforms this data into a text report
+- [] Finetune a feature extractor that transforms this text report into a set of numerical features
 - [] Build a dataset containing NHL trades
 - [] Train a neural network
 
@@ -38,9 +38,9 @@ There might be a reflexion to be had for developing a package used to access dat
 ## Things to keeps in mind of
 - We will use [PST](https://www.prosportstransactions.com/hockey/) to get NHL historical trades and add column where to alert where it requires human intervention (trade conditions, etc.)
 - Create table with our own ID system that will link it to all other Ids (NHL, HRef, EliteProspects, etc.)
-- We want a function that returns a sentence :
+- We want a function that returns a text report :
     """
-    get_player_sentence(id_player, date)
+    get_player_report(id_player, date)
     
     Depth, Position: F, 27 year old, Quality: 3, Contract: 1 year 900000
     """
