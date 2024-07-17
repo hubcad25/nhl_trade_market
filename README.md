@@ -27,3 +27,16 @@ The repo is currently organized through the following folders:
 
 # Package
 There might be a reflexion to be had for developing a package used to access data in the different databases.
+
+# Data Engineering
+
+## Things to keeps in mind of
+- We will use [PST](https://www.prosportstransactions.com/hockey/) to get NHL historical trades and add column where to alert where it requires human intervention (trade conditions, etc.)
+- Create table with our own ID system that will link it to all other Ids (NHL, HRef, EliteProspects, etc.)
+- We want a function that returns a sentence :
+    """
+    get_player_sentence(id_player, date)
+    
+    Depth, Position: F, 27 year old, Quality: 3, Contract: 1 year 900000
+    """
+
