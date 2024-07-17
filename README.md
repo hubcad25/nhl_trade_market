@@ -14,9 +14,14 @@ For example, if I wanted to know what could currently fetch the Rangers if they 
 
 # Outline of the projects
 The global projects for this purpose to be materialized are the following:
-- [] Build a relational database containing players and teams data
+- [] Build a relational database containing players and teams data (postgres sql)
+    - [] Automatic collection
+    - [] Manually input data through a UI when necessary
+- [] Build a function that retrieves data on a player at a certain point in time (in the relational db and apis), returns a json
+- [] Build a function that transforms this data into a "sentence"
+- [] Finetune a feature extractor that transforms this sentence into a set of numerical features
 - [] Build a dataset containing NHL trades
-- [] Train a transformer machine learning model
+- [] Train a neural network
 
 # Organization of the repo
 The repo is currently organized through the following folders:
@@ -39,4 +44,3 @@ There might be a reflexion to be had for developing a package used to access dat
     
     Depth, Position: F, 27 year old, Quality: 3, Contract: 1 year 900000
     """
-
