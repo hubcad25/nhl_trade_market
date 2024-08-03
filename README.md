@@ -34,6 +34,9 @@ The repo is currently organized through the following folders:
 There might be a reflexion to be had for developing a package used to access data in the different databases.
 
 # Data Engineering
+- Dataflow
+- Flow-based programming
+- Dagster vs AirFlow
 
 ## Things to keeps in mind of
 - We will use [PST](https://www.prosportstransactions.com/hockey/) to get NHL historical trades and add column where to alert where it requires human intervention (trade conditions, etc.)
