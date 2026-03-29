@@ -27,6 +27,7 @@ MIN_PARAGRAPH_LENGTH = 80
 MIN_SUBSTANTIAL_LENGTH = 200
 MAX_SEARCH_RESULTS = 10
 CACHE_DIR = Path("data/raw/articles")
+SEARCH_CACHE_DIR = Path("data/raw/search")
 CACHE_MISS = object()
 
 SOURCES_WHITELIST = {
@@ -151,6 +152,42 @@ def save_article_cache(url: str, text: str | None, cache_dir: Path = CACHE_DIR) 
         fp.write("\n")
 
 
+def hash_search(query: str, end_date: str | None) -> str:
+    key = json.dumps({"query": query, "end_date": end_date}, sort_keys=True)
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def load_cached_search(query: str, end_date: str | None, cache_dir: Path = SEARCH_CACHE_DIR) -> list[str] | object:
+    path = cache_dir / f"{hash_search(query, end_date)}.json"
+    if not path.exists():
+        return CACHE_MISS
+    try:
+        with path.open("r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except (OSError, json.JSONDecodeError):
+        return CACHE_MISS
+    if not isinstance(payload, dict):
+        return CACHE_MISS
+    urls = payload.get("urls")
+    if isinstance(urls, list):
+        return urls
+    return CACHE_MISS
+
+
+def save_search_cache(query: str, end_date: str | None, urls: list[str], cache_dir: Path = SEARCH_CACHE_DIR) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "query": query,
+        "end_date": end_date,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "urls": urls,
+    }
+    path = cache_dir / f"{hash_search(query, end_date)}.json"
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False, indent=2)
+        fp.write("\n")
+
+
 def normalize_url(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
@@ -184,11 +221,19 @@ def is_whitelisted_url(url: str) -> bool:
 def search(query: str, end_date: str | None = None) -> list[str]:
     """Search via Tavily, restricted to whitelisted domains, return up to MAX_SEARCH_RESULTS unique URLs.
 
+    Results are cached on disk keyed by (query, end_date) to avoid burning credits on restarts.
+
     Args:
         query: Search query string.
         end_date: Optional upper bound in YYYY-MM-DD format (e.g. trade date).
                   Tavily will only return articles published on or before this date.
     """
+    cached = load_cached_search(query, end_date)
+    if cached is not CACHE_MISS:
+        assert isinstance(cached, list)
+        logging.debug("Search cache hit for %r", query)
+        return cached
+
     client = _get_tavily_client()
     kwargs: dict = dict(
         query=query,
@@ -217,6 +262,7 @@ def search(query: str, end_date: str | None = None) -> list[str]:
         if nhl_id is not None:
             logging.debug("Found NHL article id %s from URL %s", nhl_id, url)
 
+    save_search_cache(query, end_date, urls)
     return urls
 
 
