@@ -182,13 +182,14 @@ def is_whitelisted_url(url: str) -> bool:
 
 
 def search(query: str) -> list[str]:
-    """Search via Tavily and return up to MAX_SEARCH_RESULTS unique URLs."""
+    """Search via Tavily, restricted to whitelisted domains, return up to MAX_SEARCH_RESULTS unique URLs."""
     client = _get_tavily_client()
     try:
         response = client.search(
             query=query,
             max_results=MAX_SEARCH_RESULTS,
             search_depth="basic",
+            include_domains=list(SOURCES_WHITELIST),
         )
     except Exception as err:
         logging.warning("Tavily search failed for %r: %s", query, err)
