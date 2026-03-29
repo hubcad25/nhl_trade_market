@@ -181,16 +181,26 @@ def is_whitelisted_url(url: str) -> bool:
     return False
 
 
-def search(query: str) -> list[str]:
-    """Search via Tavily, restricted to whitelisted domains, return up to MAX_SEARCH_RESULTS unique URLs."""
+def search(query: str, end_date: str | None = None) -> list[str]:
+    """Search via Tavily, restricted to whitelisted domains, return up to MAX_SEARCH_RESULTS unique URLs.
+
+    Args:
+        query: Search query string.
+        end_date: Optional upper bound in YYYY-MM-DD format (e.g. trade date).
+                  Tavily will only return articles published on or before this date.
+    """
     client = _get_tavily_client()
+    kwargs: dict = dict(
+        query=query,
+        max_results=MAX_SEARCH_RESULTS,
+        search_depth="basic",
+        include_domains=list(SOURCES_WHITELIST),
+    )
+    if end_date:
+        kwargs["end_date"] = end_date
+
     try:
-        response = client.search(
-            query=query,
-            max_results=MAX_SEARCH_RESULTS,
-            search_depth="basic",
-            include_domains=list(SOURCES_WHITELIST),
-        )
+        response = client.search(**kwargs)
     except Exception as err:
         logging.warning("Tavily search failed for %r: %s", query, err)
         return []
@@ -257,10 +267,15 @@ def fetch_article(url: str) -> str | None:
     return text
 
 
-def search_and_fetch(query: str, max_attempts: int = 5) -> str | None:
-    """Search via Tavily, whitelist results, then fetch first substantial article."""
+def search_and_fetch(query: str, max_attempts: int = 5, end_date: str | None = None) -> str | None:
+    """Search via Tavily, whitelist results, then fetch first substantial article.
 
-    urls = search(query)
+    Args:
+        query: Search query string.
+        max_attempts: Max number of whitelisted URLs to try fetching.
+        end_date: Optional upper bound in YYYY-MM-DD format (e.g. trade date).
+    """
+    urls = search(query, end_date=end_date)
     whitelisted = [url for url in urls if is_whitelisted_url(url)]
 
     for attempt, url in enumerate(whitelisted, start=1):
