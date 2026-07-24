@@ -1,5 +1,12 @@
 codes/explore_transformers/model/saved_model/
 
+__pycache__/
+data/*
+!data/manual/
+data/manual/*
+!data/manual/name_overrides.json
+.env
+
 ## Core latex/pdflatex auxiliary files:
 *.aux
 *.lof
