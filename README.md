@@ -149,9 +149,24 @@ Target field lists per type live in `docs/structure_*.md`.
 - Output JSON stays identical or varies slightly to reflect modified stats
 
 ### Step 9 — Fine-tuning ❌
-- Base model: Mistral 7B or Llama 3 8B
-- Platform: RunPod
+- **Platform: Azure** (replaces the earlier RunPod plan) — funded by existing Azure
+  credits that expire around **October 2026**, which sets the project deadline
+- Base model: 7-8B class, LoRA. Mistral 7B / Llama 3 8B were the original picks;
+  re-evaluate against what's current before committing
 - Output: structured JSON (picks, players, tiers)
+
+**Two Azure routes:**
+- Azure ML on a self-managed GPU VM (`Standard_NC*_A100_v4` family) — full control
+- Azure AI Foundry managed fine-tuning — upload the JSONL, less control, smaller model catalog
+
+**Check GPU quota first.** A100/H100 VMs are not available by default; quota increases
+are requested per region, take hours to days, and are sometimes denied on
+credit-program subscriptions. Verify this early — a refusal changes the plan, and it's
+better to find out months before the credits expire.
+
+**Budget reality:** a LoRA run over ~1000 short examples is 1-3 hours on a single A100,
+so the real cost is tens of dollars even across many iterations. The credits are not
+the constraint; GPU quota and dataset size are.
 
 ---
 
@@ -233,6 +248,11 @@ python pipelines/prefetch_prospect_articles.py
    needs historical NHL standings at the trade date
 3. **LLM distillation of cached articles** — 282 articles sitting unused as raw text
 4. **Formal per-type schemas** — before writing the `enrich_*.py` scripts
+
+Runs in parallel, not on the critical path but time-sensitive:
+
+- **Request Azure GPU quota now** — the answer can take days and can be no; the credits
+  expire in October 2026 and the data work doesn't depend on it
 
 ---
 
