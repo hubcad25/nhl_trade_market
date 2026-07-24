@@ -12,13 +12,17 @@ The model is a small fine-tuned LLM (Mistral 7B or Llama 3 8B) trained on (input
 
 Each side of a trade is decomposed into typed elements, each with its own enrichment schema:
 
-| Type | Key Sources |
-|---|---|
-| NHL Skater | NHL API, MoneyPuck, PuckPedia, TSN article or RSS |
-| Skater Prospect | EliteProspects, RSS/scouting |
-| NHL Goalie | NHL API, MoneyPuck (GSAx), RSS |
-| Goalie Prospect | EliteProspects, RSS |
-| Pick | Tier estimation, original team, year |
+| Type | Count | Key Sources |
+|---|---|---|
+| NHL Skater | 480 | NHL API, MoneyPuck, PuckPedia, web articles (Tavily) |
+| Skater Prospect | 192 | EliteProspects, web articles (Tavily) |
+| NHL Goalie | 45 | NHL API, MoneyPuck (GSAx), PuckPedia, web articles |
+| Goalie Prospect | 10 | EliteProspects, web articles |
+| Pick | 456 | Tier estimation (NHL standings at trade date), original team, year |
+| Future consideration | 38 | none — passthrough |
+
+Counts are from `data/resolved/classified_elements.jsonl` (1224 elements over 413 trades,
+3 still `unresolved`).
 
 **Pick tiers:** lottery (top ~10) / mid-1st (11-20) / late-1st (21-32) / 2nd round / 3rd round+
 
@@ -64,26 +68,66 @@ The `traded_with` field contains full profiles of co-traded assets, using the sa
 
 ---
 
+## Core Constraint — Snapshot at Trade Date
+
+Every enrichment must reflect what was knowable **the day before the trade**. Otherwise the
+model leaks the future (a prospect who became a star three years later). Concretely:
+
+- Stats are recomputed from the NHL game log, cut off at the trade date — not season totals
+- Web searches pass `end_date=trade_date` so no post-trade article can surface
+- Pick tiers use the original team's standing at the trade date, not the actual draft result
+
 ## Pipeline
 
-### Step 1 — Scrape TSN Trade Tracker API
+### Step 1 — Scrape TSN Trade Tracker API ✅
+- Script: `pipelines/scrape_tsn.py`
 - Endpoint: `https://next-gen.sports.bellmedia.ca/v2/trades/hockey/nhl?brand=tsn&lang=en`
-- Store raw JSON, one file per season
+- Output: `data/raw/tsn/all.json`
 - Each trade contains: teams, players (with NHL player ID when available), picks, TSN article URL for major trades
+- Schema documented in `docs/tsn_schema.md`
 
-### Step 2 — Player ID Resolution
-- Match player names to NHL player IDs via fuzzy matching
-- Fall back to local LLM for ambiguous cases
+### Step 2 — Normalization ✅
+- Script: `pipelines/normalize_trades.py`
+- Flattens the raw TSN payload into one canonical record per trade
+- Fixes picks and salary retentions mis-encoded by TSN as players
+- Output: `data/normalized/trades.jsonl` (413 trades)
 
-### Step 3 — Element Enrichment
-Each trade element is enriched according to its type via dedicated source modules:
+### Step 3 — Player ID Resolution ✅
+- Script: `pipelines/resolve_ids.py`
+- TSN provides `nhl_id` for most but not all players; missing ones are resolved by
+  slugifying the name and reading CapWages' `__NEXT_DATA__` payload
+- Manual escape hatch: `data/manual/name_overrides.json`
+- Output: `data/resolved/player_id_map.json`
+
+### Step 4 — Element Classification ✅
+- Script: `pipelines/classify_elements.py`
+- Assigns each trade element its type, using the NHL API at the trade date:
+  - `/player/{id}/landing` → position (skater vs goalie), age, height/weight
+  - `/player/{id}/game-log/{season}/2` → NHL games played before the trade
+- NHL player vs. prospect is decided by games played prior to the trade
+- Output: `data/resolved/classified_elements.jsonl` (1224 elements)
+
+### Step 5 — Article Prefetch ✅ (extraction ❌)
+- Scripts: `pipelines/prefetch_trade_articles.py`, `pipelines/prefetch_prospect_articles.py`
+- Web search runs through **Tavily** (`pipelines/sources/web_search.py`), not Google News RSS:
+  - `include_domains` restricts results to a whitelist of hockey outlets
+  - `end_date` bounds results to the trade date
+  - every search and article is cached on disk (`data/raw/search/`, `data/raw/articles/`)
+    so reruns cost no API credits
+- Trades with a working TSN article URL use it directly; the rest fall back to search
+- Current cache: 214 searches, 282 articles
+- **Still missing:** the LLM distillation step that turns raw article text into
+  `qualitative_summary` / `qualitative_signals`
+
+### Step 6 — Element Enrichment ❌
+Each classified element is enriched according to its type via dedicated source modules:
 
 **Source modules** (`pipelines/sources/`):
-- `nhl_api.py` — basic stats, TOI, position, contract status
+- `web_search.py` — Tavily search + article text extraction, with disk cache ✅
+- `nhl_api.py` — basic stats, TOI, position (logic currently inlined in `classify_elements.py`, to extract)
 - `moneypuck.py` — advanced stats (xG, GSAx, CF%, etc.)
 - `puckpedia.py` — contract details, cap hit, UFA/RFA status, NMC/NTC clauses
 - `eliteprospects.py` — prospect stats, rankings, scouting reports
-- `rss.py` — Google News RSS scraper, filtered by player name and pre-trade date
 
 **Enrichment scripts** (`pipelines/`):
 - `enrich_skater_nhl.py`
@@ -92,24 +136,43 @@ Each trade element is enriched according to its type via dedicated source module
 - `enrich_goalie_prospect.py`
 - `enrich_pick.py`
 
-**Text enrichment logic:**
-- Major trades (TSN article URL available): scrape TSN article directly
-- Minor trades (no URL): query Google News RSS filtered before trade date, extract qualitative characteristics via LLM distillation
+Target field lists per type live in `docs/structure_*.md`.
 
-### Step 4 — Build Training Dataset
+### Step 7 — Build Training Dataset ❌
 - Construct (input prompt, output JSON) pairs for each traded player
 - Each player in a multi-player trade gets its own prompt
 - Co-traded assets appear as full profiles in the `traded_with` field
 
-### Step 5 — Data Augmentation
+### Step 8 — Data Augmentation ❌
 - Slight stat variations (±10-15%) with coherent qualitative text adjustments
 - Generate variations via LLM given original profile + "generate 5 realistic variations"
 - Output JSON stays identical or varies slightly to reflect modified stats
 
-### Step 6 — Fine-tuning
+### Step 9 — Fine-tuning ❌
 - Base model: Mistral 7B or Llama 3 8B
 - Platform: RunPod
 - Output: structured JSON (picks, players, tiers)
+
+---
+
+## Data Sources
+
+| Source | Used for | Access | Status |
+|---|---|---|---|
+| TSN Trade Tracker | trade list, teams, dates, elements | public JSON endpoint | ✅ in use |
+| NHL API (`api-web.nhle.com`) | position, age, game logs, standings | public, no key | ✅ in use |
+| Tavily | web search + article text | API key in `.env` (paid credits) | ✅ in use |
+| CapWages | fallback `nhl_id` resolution | scrape `__NEXT_DATA__` | ✅ in use |
+| PuckPedia | contracts: cap hit, term, UFA/RFA, NMC/NTC, retention | `puckpedia.com/player/{slug}` | ❌ decided, not built |
+| MoneyPuck | advanced stats (xG, GSAx, CF%) | bulk CSV per season | ❌ not started |
+| EliteProspects | prospect stats, rankings, scouting | TBD | ❌ not started |
+
+**PuckPedia caveat:** the site sits behind a Cloudflare challenge — a plain `urllib`/`curl`
+request returns 403, unlike CapWages. Scraping it will need a headless browser or an
+official API, so it can't reuse the same fetch helpers as the rest of the pipeline.
+
+**Cost note:** Tavily is the only paid source. Both prefetch scripts are idempotent and
+read from the disk cache first, so reruns are free unless the query string changes.
 
 ---
 
@@ -117,18 +180,59 @@ Each trade element is enriched according to its type via dedicated source module
 
 ```
 pipelines/
-  sources/         # one module per data source
-  enrich_*.py      # one enrichment script per trade element type
-data/
-  raw/             # raw TSN API JSON by season
-  enriched/        # enriched trade elements
-  training/        # final (prompt, output) pairs
-training/
-  finetune.py
-  augment.py
-prompts/
-  templates/       # prompt templates by element type
+  scrape_tsn.py             # step 1
+  normalize_trades.py       # step 2
+  resolve_ids.py            # step 3
+  classify_elements.py      # step 4
+  prefetch_*_articles.py    # step 5
+  sources/                  # one module per data source
+  enrich_*.py               # one enrichment script per trade element type (todo)
+data/                       # gitignored except manual/
+  manual/                   # name_overrides.json — hand-fixed ID resolutions
+  raw/tsn/                  # raw TSN API JSON
+  raw/search/               # cached Tavily search results
+  raw/articles/             # cached article text
+  normalized/               # trades.jsonl
+  resolved/                 # player_id_map.json, classified_elements.jsonl
+  enriched/                 # enriched trade elements (todo)
+  training/                 # final (prompt, output) pairs (todo)
+docs/
+  tsn_schema.md             # TSN API schema
+  tsn_normalization_draft.md
+  structure_*.md            # target field lists per element type
+logs/
 ```
+
+---
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+echo "TAVILY_API_KEY=..." > .env
+```
+
+Run the pipeline in order — each step reads the previous step's output:
+
+```bash
+python pipelines/scrape_tsn.py
+python pipelines/normalize_trades.py
+python pipelines/resolve_ids.py
+python pipelines/classify_elements.py
+python pipelines/prefetch_trade_articles.py
+python pipelines/prefetch_prospect_articles.py
+```
+
+---
+
+## Next Up
+
+1. **Contract enrichment (PuckPedia)** — blocks all 525 NHL players; cap hit and
+   UFA/RFA status are likely the strongest predictors of trade return
+2. **Pick tier estimation** — 456 elements (37% of the dataset) with no code yet;
+   needs historical NHL standings at the trade date
+3. **LLM distillation of cached articles** — 282 articles sitting unused as raw text
+4. **Formal per-type schemas** — before writing the `enrich_*.py` scripts
 
 ---
 
