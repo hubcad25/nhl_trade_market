@@ -4,33 +4,83 @@
 
 Given a player's profile (stats, contract, qualitative context), predict the trade package that player would fetch on the NHL trade market — expressed as a structured JSON output containing picks, prospects, and roster players.
 
-The model is a small fine-tuned LLM (Mistral 7B or Llama 3 8B) trained on (input prompt, output JSON) pairs built from enriched historical NHL trades.
+The model is a small fine-tuned LLM trained on (input prompt, output JSON) pairs built from enriched historical NHL trades.
 
 ---
 
 ## Trade Element Types
 
-Each side of a trade is decomposed into typed elements, each with its own enrichment schema:
+Each side of a trade is decomposed into typed elements:
 
-| Type | Count | Key Sources |
-|---|---|---|
-| NHL Skater | 480 | NHL API, MoneyPuck, PuckPedia, web articles (Tavily) |
-| Skater Prospect | 192 | EliteProspects, web articles (Tavily) |
-| NHL Goalie | 45 | NHL API, MoneyPuck (GSAx), PuckPedia, web articles |
-| Goalie Prospect | 10 | EliteProspects, web articles |
-| Pick | 456 | Tier estimation (NHL standings at trade date), original team, year |
-| Future consideration | 38 | none — passthrough |
+| Type | Count |
+|---|---|
+| NHL Skater | 480 |
+| Skater Prospect | 192 |
+| NHL Goalie | 45 |
+| Goalie Prospect | 10 |
+| Pick | 456 |
+| Future consideration | 38 |
 
-Counts are from `data/resolved/classified_elements.jsonl` (1224 elements over 413 trades,
-3 still `unresolved`).
+Counts are from `data/resolved/classified_elements.jsonl` (1224 elements over 413
+trades from 2022-06-16 to 2026-03-13; 3 still `unresolved`).
 
 **Pick tiers:** lottery (top ~10) / mid-1st (11-20) / late-1st (21-32) / 2nd round / 3rd round+
+
+**Caveat on the type split.** `nhl_skater` vs `skater_prospect` is decided by NHL games
+played before the trade. That conflates two very different cases: a 19-year-old drafted
+13th overall, and a 30-year-old career AHL forward. Both have zero NHL games; almost
+nothing else about them is comparable. The research step below is expected to tell them
+apart on its own — but any code that keys off `type_classified` should not assume
+"prospect" means "young player with upside".
+
+---
+
+## Architecture
+
+The pipeline has two halves, and the split matters:
+
+**Deterministic.** Everything that must be exact and reproducible — the trade itself,
+the target label, stats cut at the trade date, pick tiers. Computed from APIs, never
+from a model.
+
+**Researched.** The qualitative profile of each player as they were perceived at the
+trade date. Produced by an LLM agent that searches the web per (player, trade date),
+because no single structured source covers the range of career stages in the dataset.
+
+This replaced an earlier design built on Tavily search plus per-source scrapers
+(PuckPedia, MoneyPuck, EliteProspects, DobberProspects, TheHockeyWriters). That work is
+preserved on the `archive/tavily-pipeline-2026-07-28` branch. It was abandoned because
+source coverage turned out to depend on the player's career stage at the trade date, and
+no combination of scrapers covered all of it — while a research agent handles the whole
+range with one prompt.
+
+---
+
+## Core Constraint — Snapshot at Trade Date
+
+Every enrichment must reflect what was knowable **the day before the trade**. Otherwise
+the model leaks the future (a prospect who became a star three years later). Concretely:
+
+- Stats are recomputed from the NHL game log, cut off at the trade date — not season totals
+- Pick tiers use the original team's standing at the trade date, not the actual draft result
+- The research agent is instructed to write as of the trade date, and never to use the
+  player's later career — neither explicitly, nor to decide what to emphasize
+
+The last one is the hard case. A model researching a 2018 trade knows how the player
+turned out, and hindsight leaks through emphasis rather than through any single sentence
+a filter could catch.
+
+**Leakage is about the return, not the publication date.** An article written after the
+trade that describes the player is legitimate input. What must never appear is the
+package the player fetched, who went the other way, or any evaluation of the trade —
+that is the prediction target.
 
 ---
 
 ## Input / Output Format
 
-Each training example is a (prompt, JSON) pair. Player names are **excluded** from prompts — the model learns from characteristics, not identities.
+Each training example is a (prompt, JSON) pair. Player names are **excluded** from
+prompts — the model learns from characteristics, not identities.
 
 **Input prompt example (NHL Skater):**
 ```
@@ -64,26 +114,18 @@ What package does this player return in a trade?
 }
 ```
 
-The `traded_with` field contains full profiles of co-traded assets, using the same schema as the main player. This allows the model to learn that return packages are conditional on the full composition of a trade.
+The `traded_with` field contains full profiles of co-traded assets, using the same schema
+as the main player. This allows the model to learn that return packages are conditional
+on the full composition of a trade.
 
 ---
 
-## Core Constraint — Snapshot at Trade Date
-
-Every enrichment must reflect what was knowable **the day before the trade**. Otherwise the
-model leaks the future (a prospect who became a star three years later). Concretely:
-
-- Stats are recomputed from the NHL game log, cut off at the trade date — not season totals
-- Web searches pass `end_date=trade_date` so no post-trade article can surface
-- Pick tiers use the original team's standing at the trade date, not the actual draft result
-
 ## Pipeline
 
-### Step 1 — Scrape TSN Trade Tracker API ✅
+### Step 1 — Scrape TSN Trade Tracker ✅
 - Script: `pipelines/scrape_tsn.py`
 - Endpoint: `https://next-gen.sports.bellmedia.ca/v2/trades/hockey/nhl?brand=tsn&lang=en`
 - Output: `data/raw/tsn/all.json`
-- Each trade contains: teams, players (with NHL player ID when available), picks, TSN article URL for major trades
 - Schema documented in `docs/tsn_schema.md`
 
 ### Step 2 — Normalization ✅
@@ -98,75 +140,70 @@ model leaks the future (a prospect who became a star three years later). Concret
   slugifying the name and reading CapWages' `__NEXT_DATA__` payload
 - Manual escape hatch: `data/manual/name_overrides.json`
 - Output: `data/resolved/player_id_map.json`
+- **Known gap:** 11 skater prospects still have no `nhl_id`
 
 ### Step 4 — Element Classification ✅
 - Script: `pipelines/classify_elements.py`
 - Assigns each trade element its type, using the NHL API at the trade date:
   - `/player/{id}/landing` → position (skater vs goalie), age, height/weight
   - `/player/{id}/game-log/{season}/2` → NHL games played before the trade
-- NHL player vs. prospect is decided by games played prior to the trade
 - Output: `data/resolved/classified_elements.jsonl` (1224 elements)
 
-### Step 5 — Article Prefetch ✅ (extraction ❌)
-- Scripts: `pipelines/prefetch_trade_articles.py`, `pipelines/prefetch_prospect_articles.py`
-- Web search runs through **Tavily** (`pipelines/sources/web_search.py`), not Google News RSS:
-  - `include_domains` restricts results to a whitelist of hockey outlets
-  - `end_date` bounds results to the trade date
-  - every search and article is cached on disk (`data/raw/search/`, `data/raw/articles/`)
-    so reruns cost no API credits
-- Trades with a working TSN article URL use it directly; the rest fall back to search
-- Current cache: 214 searches, 282 articles
-- **Still missing:** the LLM distillation step that turns raw article text into
-  `qualitative_summary` / `qualitative_signals`
+### Step 5 — Player Research ❌
+- Script: `pipelines/research_player.py` (to write)
+- One LLM agent run per (player, trade date), with web search
+- Produces a prose profile of the player as perceived at the trade date, with sources
+  and their publication dates
+- Cached on disk by `(trade_id, element_index)` so reruns cost nothing
+- Output: `data/raw/briefs/`
 
-### Step 6 — Element Enrichment ❌
-Each classified element is enriched according to its type via dedicated source modules:
+The agent is given the trade context — it needs it to find the right articles — and is
+instructed not to reproduce it. The leaky material stays quarantined in `raw/`.
 
-**Source modules** (`pipelines/sources/`):
-- `web_search.py` — Tavily search + article text extraction, with disk cache ✅
-- `nhl_api.py` — basic stats, TOI, position (logic currently inlined in `classify_elements.py`, to extract)
-- `moneypuck.py` — advanced stats (xG, GSAx, CF%, etc.)
-- `puckpedia.py` — contract details, cap hit, UFA/RFA status, NMC/NTC clauses
-- `eliteprospects.py` — prospect stats, rankings, scouting reports
+### Step 6 — Profile Extraction ❌
+- Script: `pipelines/extract_profile.py` (to write)
+- One plain API call per element, no agent loop: brief in, training profile out
+- Applies the leakage rules and strips the player's name
+- Output: `data/enriched/profiles.jsonl`
 
-**Enrichment scripts** (`pipelines/`):
-- `enrich_skater_nhl.py`
-- `enrich_skater_prospect.py`
-- `enrich_goalie_nhl.py`
-- `enrich_goalie_prospect.py`
-- `enrich_pick.py`
+Splitting research from extraction means the leakage rules can be changed and rerun
+against cached briefs without repeating a single web search. A prior version of this
+step, written against Tavily article text, is on the archive branch — its JSON schema,
+system prompt and `validate()` function are worth lifting.
 
-Target field lists per type live in `docs/structure_*.md`.
+### Step 7 — Deterministic Enrichment ❌
+Three things that must never come from the agent:
 
-### Step 7 — Build Training Dataset ❌
-- Construct (input prompt, output JSON) pairs for each traded player
+- **Stats cut at the trade date** — from the NHL game log. Also serves as a
+  hallucination check: compare against any stats the agent asserts, and flag the gaps
+- **Pick tiers** — 456 elements, from NHL standings at the trade date. No code yet
+- **The output JSON** — the target label, built from `data/normalized/trades.jsonl`
+
+### Step 8 — Build Training Dataset ❌
+- Assemble (input prompt, output JSON) pairs
 - Each player in a multi-player trade gets its own prompt
 - Co-traded assets appear as full profiles in the `traded_with` field
 
-### Step 8 — Data Augmentation ❌
+### Step 9 — Data Augmentation ❌
 - Slight stat variations (±10-15%) with coherent qualitative text adjustments
-- Generate variations via LLM given original profile + "generate 5 realistic variations"
 - Output JSON stays identical or varies slightly to reflect modified stats
 
-### Step 9 — Fine-tuning ❌
-- **Platform: Azure** (replaces the earlier RunPod plan) — funded by existing Azure
-  credits that expire around **October 2026**, which sets the project deadline
-- Base model: 7-8B class, LoRA. Mistral 7B / Llama 3 8B were the original picks;
-  re-evaluate against what's current before committing
+### Step 10 — Fine-tuning ❌
+- **Platform: Azure** — funded by existing Azure credits that expire around
+  **October 2026**, which sets the project deadline
+- Base model: 7-8B class, LoRA. Re-evaluate against what's current before committing
 - Output: structured JSON (picks, players, tiers)
 
-**Two Azure routes:**
-- Azure ML on a self-managed GPU VM (`Standard_NC*_A100_v4` family) — full control
-- Azure AI Foundry managed fine-tuning — upload the JSONL, less control, smaller model catalog
+**Two Azure routes:** Azure ML on a self-managed GPU VM (`Standard_NC*_A100_v4`), or
+Azure AI Foundry managed fine-tuning.
 
 **Check GPU quota first.** A100/H100 VMs are not available by default; quota increases
 are requested per region, take hours to days, and are sometimes denied on
-credit-program subscriptions. Verify this early — a refusal changes the plan, and it's
-better to find out months before the credits expire.
+credit-program subscriptions. A refusal changes the plan, and it is better to find out
+months before the credits expire.
 
-**Budget reality:** a LoRA run over ~1000 short examples is 1-3 hours on a single A100,
-so the real cost is tens of dollars even across many iterations. The credits are not
-the constraint; GPU quota and dataset size are.
+**Budget reality:** a LoRA run over ~1000 short examples is 1-3 hours on a single A100.
+GPU quota and dataset size are the constraints, not credit.
 
 ---
 
@@ -176,18 +213,13 @@ the constraint; GPU quota and dataset size are.
 |---|---|---|---|
 | TSN Trade Tracker | trade list, teams, dates, elements | public JSON endpoint | ✅ in use |
 | NHL API (`api-web.nhle.com`) | position, age, game logs, standings | public, no key | ✅ in use |
-| Tavily | web search + article text | API key in `.env` (paid credits) | ✅ in use |
 | CapWages | fallback `nhl_id` resolution | scrape `__NEXT_DATA__` | ✅ in use |
-| PuckPedia | contracts: cap hit, term, UFA/RFA, NMC/NTC, retention | `puckpedia.com/player/{slug}` | ❌ decided, not built |
-| MoneyPuck | advanced stats (xG, GSAx, CF%) | bulk CSV per season | ❌ not started |
-| EliteProspects | prospect stats, rankings, scouting | TBD | ❌ not started |
+| LLM agent + web search | qualitative player profiles | Claude API | ❌ not built |
 
-**PuckPedia caveat:** the site sits behind a Cloudflare challenge — a plain `urllib`/`curl`
-request returns 403, unlike CapWages. Scraping it will need a headless browser or an
-official API, so it can't reuse the same fetch helpers as the rest of the pipeline.
-
-**Cost note:** Tavily is the only paid source. Both prefetch scripts are idempotent and
-read from the disk cache first, so reruns are free unless the query string changes.
+**On funding the research step.** Azure credits pay for fine-tuning. They only reach the
+research agent through Claude on Microsoft Foundry, billed via Azure Marketplace — and
+many Azure credit programs exclude Marketplace purchases. Verify the grant's terms
+before assuming the agent is covered.
 
 ---
 
@@ -199,24 +231,25 @@ pipelines/
   normalize_trades.py       # step 2
   resolve_ids.py            # step 3
   classify_elements.py      # step 4
-  prefetch_*_articles.py    # step 5
-  sources/                  # one module per data source
-  enrich_*.py               # one enrichment script per trade element type (todo)
+  research_player.py        # step 5 (todo)
+  extract_profile.py        # step 6 (todo)
 data/                       # gitignored except manual/
   manual/                   # name_overrides.json — hand-fixed ID resolutions
   raw/tsn/                  # raw TSN API JSON
-  raw/search/               # cached Tavily search results
-  raw/articles/             # cached article text
+  raw/briefs/               # cached agent research briefs (todo)
   normalized/               # trades.jsonl
   resolved/                 # player_id_map.json, classified_elements.jsonl
-  enriched/                 # enriched trade elements (todo)
+  enriched/                 # profiles.jsonl (todo)
   training/                 # final (prompt, output) pairs (todo)
 docs/
   tsn_schema.md             # TSN API schema
   tsn_normalization_draft.md
-  structure_*.md            # target field lists per element type
 logs/
 ```
+
+`data/raw/search/` and `data/raw/articles/` hold 214 cached Tavily searches and 282
+article texts from the previous design. They are untracked and cost nothing to keep;
+delete them once the agent approach is validated.
 
 ---
 
@@ -224,7 +257,6 @@ logs/
 
 ```bash
 pip install -r requirements.txt
-echo "TAVILY_API_KEY=..." > .env
 ```
 
 Run the pipeline in order — each step reads the previous step's output:
@@ -234,32 +266,34 @@ python pipelines/scrape_tsn.py
 python pipelines/normalize_trades.py
 python pipelines/resolve_ids.py
 python pipelines/classify_elements.py
-python pipelines/prefetch_trade_articles.py
-python pipelines/prefetch_prospect_articles.py
 ```
 
 ---
 
 ## Next Up
 
-1. **Contract enrichment (PuckPedia)** — blocks all 525 NHL players; cap hit and
-   UFA/RFA status are likely the strongest predictors of trade return
-2. **Pick tier estimation** — 456 elements (37% of the dataset) with no code yet;
-   needs historical NHL standings at the trade date
-3. **LLM distillation of cached articles** — 282 articles sitting unused as raw text
-4. **Formal per-type schemas** — before writing the `enrich_*.py` scripts
-
-Runs in parallel, not on the critical path but time-sensitive:
-
-- **Request Azure GPU quota now** — the answer can take days and can be no; the credits
-  expire in October 2026 and the data work doesn't depend on it
+1. **Write the research agent** and pilot it on 5-10 elements spanning career stages.
+   This gives the real per-element cost, and therefore the total — the number that
+   decides whether the approach is viable at 727 players
+2. **Pick tier estimation** — 456 elements (37% of the dataset) with no code yet
+3. **Request Azure GPU quota** — the answer can take days and can be no; it does not
+   depend on the data work, and the credits expire October 2026
 
 ---
 
 ## Key Design Decisions
 
-- **No player names in prompts** — model learns value from characteristics, not identity. Enables cleaner data augmentation.
-- **Heterogeneous inputs handled via LLM** — stats + free text naturally combined without forcing a unified feature matrix across skaters, prospects, picks and goalies.
-- **traded_with field** — allows the model to learn that return packages depend on the full composition of the trade, not just the main piece.
-- **Text enrichment via LLM distillation** — qualitative characteristics (leadership, defensive identity, playoff performer reputation) extracted from journalism, not invented.
-- **Pick tier over raw round** — encodes the true expected value of a pick at trade time, accounting for team context and protection conditions.
+- **No player names in prompts** — model learns value from characteristics, not identity.
+  Enables cleaner data augmentation.
+- **Research agent over per-source scrapers** — source coverage depends on career stage
+  at the trade date, and no scraper set covered the whole range. Validated on the hard
+  cases: an anonymous 30-year-old AHL veteran in a one-for-one minor trade, and a
+  throw-in prospect in a blockbuster where all coverage was about someone else.
+- **Research separated from extraction** — leaky material stays in `raw/`; the rules can
+  be rerun without repeating a search.
+- **Deterministic core stays deterministic** — target label, stats, and pick tiers are
+  computed, never generated. Agent-asserted stats are checked against them.
+- **traded_with field** — return packages depend on the full composition of the trade,
+  not just the main piece.
+- **Pick tier over raw round** — encodes expected value at trade time, accounting for
+  team context and protection conditions.
