@@ -100,7 +100,47 @@ Cas de test déjà validés manuellement :
 | Nils Juntorp | 2025-01-26 | pièce accessoire d'un blockbuster, couverture entièrement sur Rantanen |
 | Graham Sward | 2024-03-07 | cas intermédiaire, défenseur WHL dans un échange de second plan |
 
-Reste à couvrir dans le pilote : un joueur NHL établi, et un prospect d'élite pré-pro.
+Reste à couvrir dans le pilote : un prospect d'élite pré-pro. Shea Weber et Kevin
+Fiala couvrent le joueur NHL établi.
+
+### Résultats du pilote — 2026-07-28
+
+5 éléments passés, `status: completed` partout, briefs de 4 900 à 5 800 caractères
+avec sources datées. Par élément :
+
+| | moyenne | étendue |
+|---|---|---|
+| recherches web | 9 | 6 – 14 |
+| tokens entrée | ~70 000 | 53k – 106k |
+| tokens sortie | ~4 500 | |
+| durée | ~110 s | 20 s – 130 s |
+
+Extrapolé aux 727 éléments : **~50 M tokens d'entrée, ~3 M de sortie, ~6 700
+recherches web**. Le volume d'entrée vient de la boucle serveur, qui réinjecte le
+contenu des pages à chaque tour — ce n'est pas notre prompt. Reste à confirmer le
+tarif de `gpt-5.5` et de l'outil `web_search` sur Azure pour convertir ça en dollars.
+
+Deux enseignements du pilote :
+
+1. **L'agent recopie le contexte qu'on lui donne.** La première version du contexte
+   décrivait le statut comme « espoir (moins de 25 matchs dans la LNH) » ; le brief
+   de Criscuolo est ressorti avec « il demeure sous le seuil des 25 matchs dans la
+   LNH ». Un artefact de notre classification, présenté comme un fait sur le joueur.
+   Les libellés de stade ne portent plus de seuil numérique.
+
+2. **Les URLs sources fuient, même quand la prose ne fuit pas.** Les briefs ne
+   nomment jamais le retour de l'échange, mais les sources incluent des articles
+   d'annonce du type `detroit-trades-kyle-criscuolo-receives-jasper-weatherby`.
+   Toléré dans `raw/`, mais **l'extraction (E6) ne doit pas donner les URLs au
+   modèle** — seulement leur domaine et leur date.
+
+### Contexte manquant
+
+`classified_elements.jsonl` ne porte ni l'âge ni les matchs NHL avant le trade,
+contrairement à ce que supposait la section « Contexte fourni à l'agent ». Ces
+champs viennent du module stats NHL (étape 7a). En attendant, le contexte se limite
+à nom, date, équipes, position et stade de carrière — suffisant pour que l'agent
+trouve les bons articles dans les 5 cas du pilote.
 
 ---
 
