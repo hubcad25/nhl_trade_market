@@ -197,117 +197,63 @@ un arbitrage serré.
 Les briefs du mini restent dans `data/raw/briefs/gpt-5.4-mini/` : ils serviront de
 point de comparaison si le détecteur d'hallucination (n7z) a besoin de cas positifs.
 
-Deux enseignements du pilote :
-
-1. **L'agent recopie le contexte qu'on lui donne.** La première version du contexte
-   décrivait le statut comme « espoir (moins de 25 matchs dans la LNH) » ; le brief
-   de Criscuolo est ressorti avec « il demeure sous le seuil des 25 matchs dans la
-   LNH ». Un artefact de notre classification, présenté comme un fait sur le joueur.
-   Les libellés de stade ne portent plus de seuil numérique.
-
-2. **Les URLs sources fuient, même quand la prose ne fuit pas.** Les briefs ne
-   nomment jamais le retour de l'échange, mais les sources incluent des articles
-   d'annonce du type `detroit-trades-kyle-criscuolo-receives-jasper-weatherby`.
-   Toléré dans `raw/`, mais **l'extraction (E6) ne doit pas donner les URLs au
-   modèle** — seulement leur domaine et leur date.
-
-### Contexte manquant
-
-`classified_elements.jsonl` ne porte ni l'âge ni les matchs NHL avant le trade,
-contrairement à ce que supposait la section « Contexte fourni à l'agent ». Ces
-champs viennent du module stats NHL (étape 7a). En attendant, le contexte se limite
-à nom, date, équipes, position et stade de carrière — suffisant pour que l'agent
-trouve les bons articles dans les 5 cas du pilote.
-
 ---
 
-## Étape 6 — Extraction du profil
+## Prompt v2 — protocole de recherche et discipline de sourçage
 
-Script : `pipelines/extract_profile.py`
+Le prompt v1 ne disait rien sur *combien* chercher. C'est précisément ce qui manquait
+au mini, qui faisait 2,4 recherches là où gpt-5.5 en faisait 11. v2 ajoute trois
+choses : un protocole (une recherche par rubrique, reformuler avant d'abandonner),
+l'obligation de rattacher chaque fait à une page consultée avec « non documenté »
+comme repli imposé, et l'interdiction explicite d'écrire la signalétique de mémoire —
+taille, poids, main de tir, repêchage, contrat — qui est exactement là où le mini
+avait halluciné.
 
-Un appel API simple par élément, sans boucle d'agent. Entrée : le brief. Sortie :
-le profil destiné au dataset d'entraînement.
+Le cache est désormais indexé par `{modèle}/{version de prompt}/` : changer le prompt
+rend les lots incomparables, et on veut mesurer une révision sans perdre le précédent.
 
-Responsabilités :
+Mesures sur les 5 mêmes cas, par élément :
 
-- appliquer les règles anti-fuite (retour, contrepartie, évaluation de l'échange)
-- retirer le nom du joueur — nom complet, prénom seul, nom de famille seul, surnoms
-- produire une sortie structurée validée contre un schéma
+| | rech. | sources | car. | car./source | « non doc. » | artefacts |
+|---|---|---|---|---|---|---|
+| mini v1 | 2,4 | 3,8 | 4 803 | 1 264 | 0 | 4/5 |
+| mini v2 | 3,2 | 4,8 | 3 837 | **799** | 5 | 5/5 |
+| 5.5 v1 | 11,0 | 7,6 | 6 124 | 806 | 0 | 0/5 |
+| 5.5 v2 | 9,8 | **10,8** | 7 055 | **653** | 14 | 0/5 |
 
-Le retrait du nom se fait **après** génération, de façon déterministe et vérifiable.
-Demander à l'agent d'écrire sans jamais nommer le joueur dégrade la prose.
+**v2 améliore les deux modèles, et gpt-5.5 davantage** : il passe de 7,6 à 10,8
+sources par brief et de 806 à 653 caractères par source. La discipline de sourçage
+profite au modèle qui cherche déjà beaucoup.
 
-La version précédente de ce script, écrite contre du texte d'article Tavily, est sur
-la branche d'archive :
+**Le mini devient défendable sans devenir équivalent.** Sa contradiction sur la main
+de tir de Juntorp a disparu, et son ratio caractères/source rejoint celui de gpt-5.5
+v1. Mais il y arrive en écrivant moins, pas en cherchant plus : 4,8 sources contre
+10,8. Le matériel par joueur reste deux fois plus mince. Pour un corpus
+d'entraînement, ça donne des profils plus creux — pas nécessairement faux.
 
-```bash
-git show archive/tavily-pipeline-2026-07-28:pipelines/extract_qualitative.py
-```
+**Défaut restant, propre au mini : 5 briefs sur 5** contiennent un préambule méta
+(« Voici un portrait strictement ancré dans des sources consultées ») et une relance
+conversationnelle finale (« Si tu veux, je peux aussi te le reformater en portrait
+journalistique de 120-150 mots »). gpt-5.5 : 0 sur 5, dans les deux versions.
+Corrigeable au prompt ou en post-traitement, mais c'est du bruit à retirer avant
+l'étape 6.
 
-Son schéma JSON, son system prompt et sa fonction `validate()` sont réutilisables tels
-quels. Seule l'entrée change.
+### Décision de coût — à trancher
 
-**Note sur `validate()`** : sa règle `PICK_VOCABULARY` marque comme fuite des phrases
-légitimes — « he was a first-round talent » décrit le pedigree du joueur, pas ce qu'il
-a rapporté. À restreindre aux verbes de transaction (`returned`, `in exchange for`,
-`sent`) plutôt qu'au vocabulaire de repêchage seul.
+| | coût des 727 |
+|---|---|
+| gpt-5.5 v2 | ~414 $ |
+| gpt-5.4-mini v2 | ~14 $ |
 
----
+Trois options :
 
-## Étape 7 — Enrichissement déterministe
+1. **Tout en gpt-5.5** — ~414 $, le matériel le plus riche, aucune surprise.
+2. **Tout en mini** — ~14 $, profils deux fois plus minces, et il faut d'abord relire
+   à la main assez de briefs pour croire à sa fiabilité factuelle (issue c4z).
+3. **Hybride, par escalade** — passer les 727 au mini (14 $), puis relancer en 5.5
+   seulement les éléments dont le brief mini est maigre (peu de sources, beaucoup de
+   « non documenté »). Le cache par modèle rend ça trivial et l'étape 6 lit ce qu'on
+   lui donne. À 30 % d'escalade : ~140 $.
 
-Trois choses qui ne doivent jamais venir de l'agent.
-
-### 7a — Stats coupées à la date du trade
-
-Depuis le game log NHL. La logique existe déjà, inlinée dans `classify_elements.py`
-(`/player/{id}/game-log/{season}/2`) — à extraire dans un module réutilisable.
-
-Double usage : ce sont les stats du prompt, **et** un détecteur d'hallucination.
-Quand l'agent avance des chiffres dans son brief, on les compare aux vrais. L'écart
-mesure la fiabilité de l'agent sur l'ensemble du dataset, gratuitement.
-
-### 7b — Tiers de picks
-
-456 éléments, 37 % du dataset, aucun code à ce jour. Requiert le classement NHL à la
-date du trade pour l'équipe d'origine du choix.
-
-Tiers : lottery (top ~10) / mid-1st (11-20) / late-1st (21-32) / 2e ronde / 3e ronde+
-
-### 7c — Le JSON de sortie
-
-La cible, construite depuis `data/normalized/trades.jsonl`. Jamais générée.
-
----
-
-## Ordre de travail
-
-```
-5 (agent + pilote)  ──┐
-                      ├──> 8 (assemblage du dataset)
-7b (tiers de picks) ──┤
-7a (stats)          ──┘
-        │
-        └──> 6 (extraction) dépend de 5
-```
-
-Le pilote de l'étape 5 est bloquant : son coût décide si l'architecture tient à
-727 éléments. Les tiers de picks (7b) n'en dépendent pas et peuvent avancer en
-parallèle.
-
-Hors chemin critique mais sensible au temps : la demande de quota GPU Azure. La
-réponse prend des jours et peut être négative, et les crédits expirent en octobre 2026.
-
----
-
-## Questions ouvertes
-
-- **Financement de l'agent.** Les crédits Azure paient le fine-tuning. Ils n'atteignent
-  l'agent que via Claude sur Microsoft Foundry, facturé par le Marketplace Azure — que
-  beaucoup de programmes de crédits excluent. À vérifier dans les termes de la subvention.
-- **Les 11 prospects sans `nhl_id`.** Sans identifiant, pas de stats déterministes.
-  L'agent peut-il produire un profil utilisable malgré tout, ou faut-il les résoudre
-  à la main dans `name_overrides.json` ?
-- **Les 3 éléments `unresolved`** de la classification.
-- **Sort des caches Tavily** (`data/raw/search/`, `data/raw/articles/`) une fois
-  l'approche agent validée.
+L'option 3 a un attrait particulier : le critère d'escalade est mesurable sur le
+brief lui-même, sans jugement humain, et c'est le même signal dont n7z a besoin.

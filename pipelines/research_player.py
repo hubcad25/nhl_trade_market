@@ -9,7 +9,7 @@ Produit un brief en prose du joueur tel qu'il était perçu à la date du trade,
 les URLs sources tirées des annotations du bloc message.
 
 Lit  data/resolved/classified_elements.jsonl (éléments joueurs seulement)
-Écrit data/raw/briefs/{modèle}/{trade_id}-{one|two}-{element_index}.json
+Écrit data/raw/briefs/{modèle}/{version de prompt}/{trade_id}-{one|two}-{index}.json
       (un fichier = un cache)
 
 La fuite temporelle est tolérée ici : c'est du brut. L'extraction (E6) fait le ménage.
@@ -85,16 +85,37 @@ STAGE_LABELS = {
     "goalie_prospect": "gardien espoir, sans poste régulier dans la LNH",
 }
 
+# Le numéro de version fait partie du chemin de cache : un changement de prompt rend
+# les briefs incomparables entre eux, et on veut pouvoir mesurer l'effet d'une
+# révision sans perdre le lot précédent. À incrémenter à chaque modification.
+PROMPT_VERSION = "v2"
+
+# v1 : la version de plan.md. Deux clauses portaient le poids — « ni pour choisir quoi
+#      mettre en avant » et « dis-le explicitement plutôt que de combler ». Tenues par
+#      gpt-5.5, pas par gpt-5.4-mini, qui écrivait 2 400 caractères par source citée
+#      et se contredisait sur la main de tir de Juntorp.
+# v2 : ajoute un protocole de recherche (le mini ne cherchait pas — 2,4 requêtes contre
+#      11), l'interdiction de la signalétique non sourcée (le point exact où il a
+#      halluciné), et l'inversion explicite du compromis longueur/sourçage.
 PROMPT_TEMPLATE = """Recherche sur le web et produis un portrait de **{name}** tel qu'il était perçu au **{date}**, au moment où il a été échangé.
 
 Contexte de l'échange (pour t'aider à trouver les bons articles — ne le restitue pas dans ta réponse) :
 {context}
 
+Méthode. Fais une recherche distincte pour chacune des rubriques ci-dessous avant de commencer à rédiger. Si une recherche ne donne rien d'exploitable, reformule-la au moins une fois avant d'abandonner la rubrique. Ne rédige qu'une fois tes recherches terminées.
+
+Rubriques à couvrir : statut et âge, rang de repêchage, niveau de jeu et production récente, forces reconnues, réserves des recruteurs, projection consensuelle, situation contractuelle, santé.
+
 Écris comme si tu rédigeais la veille de l'échange, sans aucune connaissance de ce qui s'est passé depuis. N'évalue pas l'échange, ne mentionne pas ce qu'il a rapporté ni qui est allé dans l'autre sens, et n'utilise jamais la carrière ultérieure du joueur — ni explicitement, ni pour choisir quoi mettre en avant.
 
-Couvre : statut et âge, rang de repêchage, niveau de jeu et production récente, forces reconnues, réserves des recruteurs, projection consensuelle, situation contractuelle, santé.
+Règles de sourçage, sans exception :
 
-Cite tes sources avec leur date de publication. Si l'information est mince, dis-le explicitement plutôt que de combler."""
+- Chaque affirmation factuelle est suivie de sa source et de sa date de publication.
+- Une affirmation que tu ne peux rattacher à une page que tu as réellement consultée ne doit pas être écrite. Écris « non documenté » à la place.
+- Cela vaut d'abord pour la signalétique — taille, poids, main de tir, date de naissance, rang de repêchage, termes du contrat. Ces chiffres ne s'écrivent jamais de mémoire : soit tu les as lus dans une source consultée, soit ils sont « non documenté ».
+- Si deux sources se contredisent, donne les deux et dis laquelle tu retiens.
+
+Un portrait court et entièrement sourcé vaut mieux qu'un portrait complet à moitié deviné. Une rubrique vide est une information utile — ne la comble pas."""
 
 
 def cache_path(rec: dict, model: str) -> Path:
@@ -102,11 +123,14 @@ def cache_path(rec: dict, model: str) -> Path:
 
     `element_index` est relatif au côté de l'échange, donc la clé doit inclure
     `receives_key` — sinon les deux côtés d'un même trade se marchent dessus. Le
-    dossier par modèle permet de comparer deux modèles sur les mêmes éléments sans
-    que l'un écrase les briefs de l'autre.
+    dossier par modèle et par version de prompt permet de comparer deux modèles, ou
+    deux révisions du prompt, sur les mêmes éléments sans que l'un écrase l'autre.
     """
     side = "one" if rec["receives_key"] == "team_one_receives" else "two"
-    return BRIEFS_DIR / model / f"{rec['trade_id']}-{side}-{rec['element_index']}.json"
+    return (
+        BRIEFS_DIR / model / PROMPT_VERSION
+        / f"{rec['trade_id']}-{side}-{rec['element_index']}.json"
+    )
 
 
 def build_context(rec: dict) -> str:
@@ -260,6 +284,7 @@ def research(rec: dict, model: str, session: requests.Session, force: bool) -> t
         "nhl_id": rec["element"]["nhl_id"],
         "type_classified": rec["element"]["type_classified"],
         "model": model,
+        "prompt_version": PROMPT_VERSION,
         "api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "preview"),
         "prompt": prompt,
         "elapsed_s": round(time.monotonic() - started, 1),
@@ -360,7 +385,7 @@ def main():
         if not os.environ.get(var):
             raise SystemExit(f"{var} manquant — voir .env.example")
 
-    (BRIEFS_DIR / model).mkdir(parents=True, exist_ok=True)
+    (BRIEFS_DIR / model / PROMPT_VERSION).mkdir(parents=True, exist_ok=True)
     cached = sum(1 for rec in records if cache_path(rec, model).exists())
     log.info("%d éléments à traiter (%d déjà en cache) sur %d au total",
              len(records), cached, total_elements)
