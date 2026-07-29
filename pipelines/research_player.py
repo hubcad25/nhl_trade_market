@@ -88,7 +88,7 @@ STAGE_LABELS = {
 # Le numéro de version fait partie du chemin de cache : un changement de prompt rend
 # les briefs incomparables entre eux, et on veut pouvoir mesurer l'effet d'une
 # révision sans perdre le lot précédent. À incrémenter à chaque modification.
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 # v1 : la version de plan.md. Deux clauses portaient le poids — « ni pour choisir quoi
 #      mettre en avant » et « dis-le explicitement plutôt que de combler ». Tenues par
@@ -97,6 +97,10 @@ PROMPT_VERSION = "v2"
 # v2 : ajoute un protocole de recherche (le mini ne cherchait pas — 2,4 requêtes contre
 #      11), l'interdiction de la signalétique non sourcée (le point exact où il a
 #      halluciné), et l'inversion explicite du compromis longueur/sourçage.
+# v3 : le brief est un document, pas une réponse de chat. gpt-5.4-mini terminait 5
+#      briefs sur 5 par « Si tu veux, je peux aussi te le reformater… » et les ouvrait
+#      par un préambule sur sa propre méthode. gpt-5.5 ne le faisait jamais, mais la
+#      clause est inoffensive pour lui et indispensable si on lit du mini.
 PROMPT_TEMPLATE = """Recherche sur le web et produis un portrait de **{name}** tel qu'il était perçu au **{date}**, au moment où il a été échangé.
 
 Contexte de l'échange (pour t'aider à trouver les bons articles — ne le restitue pas dans ta réponse) :
@@ -115,7 +119,9 @@ Règles de sourçage, sans exception :
 - Cela vaut d'abord pour la signalétique — taille, poids, main de tir, date de naissance, rang de repêchage, termes du contrat. Ces chiffres ne s'écrivent jamais de mémoire : soit tu les as lus dans une source consultée, soit ils sont « non documenté ».
 - Si deux sources se contredisent, donne les deux et dis laquelle tu retiens.
 
-Un portrait court et entièrement sourcé vaut mieux qu'un portrait complet à moitié deviné. Une rubrique vide est une information utile — ne la comble pas."""
+Un portrait court et entièrement sourcé vaut mieux qu'un portrait complet à moitié deviné. Une rubrique vide est une information utile — ne la comble pas.
+
+Forme. Ta réponse est le portrait, rien d'autre. Pas de préambule sur ta méthode ou sur tes recherches, pas de conclusion s'adressant à un lecteur, pas d'offre de reformuler ou de compléter. Écris une rubrique par section, titrée."""
 
 
 def cache_path(rec: dict, model: str) -> Path:
