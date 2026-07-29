@@ -366,3 +366,51 @@ après le trade pour appuyer l'absence de conflit — hors-instruction sur la
 catégorie de source, mais le contenu ne fuit rien.
 
 **v6 est la version retenue pour la passe complète.**
+
+---
+
+## Passe complète — 727/727, 2026-07-29
+
+Lancée en `gpt-5.4-mini`, prompt v6, `--workers 8`. Aucun 429/throttling observé sur
+toute la run malgré le débit soutenu (~38 appels/minute) — le cap de quota affiché
+(200) n'a pas été un facteur limitant en pratique.
+
+| | |
+|---|---|
+| éléments traités | 727/727 |
+| échecs après reprise | 0 |
+| coût réel | **~12,7 $** (12,54 $ + 0,09 $ pour les 4 reprises) |
+| tokens entrée / sortie | 13,2 M / 953 k |
+| recherches web | 2 592 |
+| durée totale | ~40 min |
+
+Le coût réel est sous l'estimation du pilote (14-17 $) — cohérent, le pilote
+sur-échantillonnait volontairement les cas difficiles (joueurs peu couverts,
+controverses).
+
+**4 échecs techniques** — statut `incomplete`, raison `content_filter` côté Azure,
+sur Rem Pitlick, Arnaud Durandeau, Henri Jokiharju, Tanner Pearson. Cause non
+identifiée : rien d'évident dans le contenu de ces recherches qui expliquerait un
+blocage (aucun n'est un cas sensible). Chacun a un doublon dans le dataset (un
+même joueur, un autre trade) qui, lui, est passé sans problème — donc pas une
+propriété du joueur, plutôt un incident ponctuel côté modèle. Repassés avec
+`python pipelines/research_player.py --retry-failed --model gpt-5.4-mini` :
+les 4 ont réussi au deuxième essai, sans intervention.
+
+**12 briefs sur 728** ont du texte complet mais une liste `sources` vide — les
+annotations de citations n'ont pas été retournées par l'API pour cet appel
+spécifique, alors que la prose contient des citations en clair (ex. Brennan
+Othmann : « Elite Prospects, 2026-07-28 » dans le texte, mais rien dans
+`sources`). Pas un échec de recherche, un accroc d'extraction. À garder en tête
+pour l'étape 6 : ces 12 briefs ont un contenu exploitable, mais leurs citations
+devront être lues dans la prose plutôt que dans le champ structuré.
+
+Corpus final : `data/raw/briefs/gpt-5.4-mini/v6/`, 727 fichiers. Le test isolé sur
+Jack Eichel (trade_id fictif 999999, section précédente) avait été écrit dans ce
+même dossier au moment du test — retiré avant de fermer cette étape, il ne fait
+pas partie du corpus réel.
+
+**Prochaine étape : lecture manuelle d'un échantillon plus large (issue c4z)**
+avant d'attaquer l'extraction (e3f). La passe complète n'a pas été relue en
+entier — seuls les 10 cas du pilote et quelques échantillons ponctuels
+(Pierre-Luc Dubois ×2) l'ont été.
