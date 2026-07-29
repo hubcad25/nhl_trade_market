@@ -88,7 +88,7 @@ STAGE_LABELS = {
 # Le numéro de version fait partie du chemin de cache : un changement de prompt rend
 # les briefs incomparables entre eux, et on veut pouvoir mesurer l'effet d'une
 # révision sans perdre le lot précédent. À incrémenter à chaque modification.
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 # v1 : la version de plan.md. Deux clauses portaient le poids — « ni pour choisir quoi
 #      mettre en avant » et « dis-le explicitement plutôt que de combler ». Tenues par
@@ -101,6 +101,13 @@ PROMPT_VERSION = "v3"
 #      briefs sur 5 par « Si tu veux, je peux aussi te le reformater… » et les ouvrait
 #      par un préambule sur sa propre méthode. gpt-5.5 ne le faisait jamais, mais la
 #      clause est inoffensive pour lui et indispensable si on lit du mini.
+# v4 : la clause anti-rétrospective de v1-v3 interdisait de *mentionner* le retour de
+#      l'échange, mais rien n'interdisait de *se servir* d'une page qui l'annonce.
+#      Sur le pilote, gpt-5.4-mini a construit 33 % de ses sources (16/18 citations
+#      pour Shea Weber) sur des communiqués de transaction — des textes écrits après
+#      coup, qui encadrent le joueur par ce qu'il a rapporté même quand le brief n'en
+#      reprend pas le contenu. gpt-5.5 le faisait aussi, à 13-22 %. v4 interdit la
+#      catégorie de source, pas seulement son contenu.
 PROMPT_TEMPLATE = """Recherche sur le web et produis un portrait de **{name}** tel qu'il était perçu au **{date}**, au moment où il a été échangé.
 
 Contexte de l'échange (pour t'aider à trouver les bons articles — ne le restitue pas dans ta réponse) :
@@ -111,6 +118,8 @@ Méthode. Fais une recherche distincte pour chacune des rubriques ci-dessous ava
 Rubriques à couvrir : statut et âge, rang de repêchage, niveau de jeu et production récente, forces reconnues, réserves des recruteurs, projection consensuelle, situation contractuelle, santé.
 
 Écris comme si tu rédigeais la veille de l'échange, sans aucune connaissance de ce qui s'est passé depuis. N'évalue pas l'échange, ne mentionne pas ce qu'il a rapporté ni qui est allé dans l'autre sens, et n'utilise jamais la carrière ultérieure du joueur — ni explicitement, ni pour choisir quoi mettre en avant.
+
+N'utilise et ne cite jamais un article qui annonce, commente ou récapitule cet échange — reconnaissable à son titre ou son URL (« trade », « traded », « acquire », « acquires », « receives », « roster transaction », « in exchange for »), ou à une date de publication le jour même ou après le {date}. Même si un tel article contient une information par ailleurs correcte, cherche-la ailleurs, dans une source antérieure et indépendante de l'échange. Si tu ne trouves cette information dans aucune autre source, traite-la comme non documentée.
 
 Règles de sourçage, sans exception :
 

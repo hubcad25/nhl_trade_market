@@ -257,3 +257,44 @@ Trois options :
 
 L'option 3 a un attrait particulier : le critère d'escalade est mesurable sur le
 brief lui-même, sans jugement humain, et c'est le même signal dont n7z a besoin.
+
+---
+
+## Prompt v4 — interdire la catégorie de source, pas seulement son contenu
+
+v1-v3 interdisaient de *mentionner* le retour de l'échange, mais rien n'interdisait
+de *se servir* d'une page qui l'annonce. En relisant les briefs v3 en détail (pas
+seulement leurs métriques agrégées), le brief de Shea Weber tirait 16 de ses 18
+citations d'un communiqué de transaction ; celui de Criscuolo, plusieurs aussi. Les
+métriques de forme (nombre de sources, ratio caractères/source) ne voyaient rien
+d'anormal — c'est en lisant le contenu que le problème est apparu. Un communiqué
+d'acquisition est écrit après coup et encadre le joueur par ce qu'il a rapporté,
+même quand le brief n'en reprend pas le texte : c'est la fuite temporelle que le
+prompt était censé bloquer, par la porte de derrière.
+
+v4 ajoute une clause qui interdit la catégorie de source (titre/URL contenant
+« trade », « acquire », « receives »… ou publiée le jour même ou après la date du
+trade), avec repli en « non documenté » si l'info n'existe nulle part ailleurs.
+
+Mesure (URLs de sources correspondant à un motif de transaction, faux positif
+`-for-` corrigé) :
+
+| | sources d'annonce d'échange |
+|---|---|
+| mini v3 | 29 % |
+| **mini v4** | **11 %** |
+| 5.5 v3 | 11 % |
+
+Le mini rejoint le niveau de gpt-5.5 sur le même prompt — la fuite n'était donc pas
+propre au mini, v1-v3 la permettaient pour les deux modèles, gpt-5.5 s'en tenait
+juste plus loin par tempérament. La clause **réduit** la fuite, elle ne l'élimine
+pas : 2 citations sur 19 dans le pilote mini v4 proviennent encore d'un communiqué
+de transaction (le nombre d'années de contrat restantes de Weber, le statut
+non-repêché de Criscuolo). Ce résidu n'a pas été creusé plus loin.
+
+**Leçon de méthode** : le ratio caractères/source, le nombre de « non documenté »,
+la présence d'artefacts conversationnels — tout ça mesure la forme du brief, pas
+son contenu. Le seul test qui a trouvé la fuite temporelle a été de lire des briefs
+en entier et de vérifier chaque URL citée. Avant toute décision de coût qui repose
+sur une comparaison de modèles ou de prompts, relire du texte, pas seulement des
+métriques agrégées.
