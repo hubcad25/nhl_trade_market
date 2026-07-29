@@ -115,10 +115,45 @@ avec sources datées. Par élément :
 | tokens sortie | ~4 500 | |
 | durée | ~110 s | 20 s – 130 s |
 
-Extrapolé aux 727 éléments : **~50 M tokens d'entrée, ~3 M de sortie, ~6 700
+Extrapolé aux 727 éléments : **~58 M tokens d'entrée, ~4 M de sortie, ~8 000
 recherches web**. Le volume d'entrée vient de la boucle serveur, qui réinjecte le
-contenu des pages à chaque tour — ce n'est pas notre prompt. Reste à confirmer le
-tarif de `gpt-5.5` et de l'outil `web_search` sur Azure pour convertir ça en dollars.
+contenu des pages à chaque tour — ce n'est pas notre prompt.
+
+### Coût — ~400 $ US pour la passe complète
+
+Tarifs relevés le 2026-07-28 sur `prices.azure.com`, compteurs
+`5.5 ShortCo … Gl 1M Tokens` (Gl parce que le déploiement `gpt-5.5` est en
+GlobalStandard, vérifié avec `az cognitiveservices account deployment list`) :
+
+| | $US / M tokens |
+|---|---|
+| entrée | 5,00 |
+| entrée en cache | 0,50 |
+| sortie | 30,00 |
+
+**0,56 $ par élément en moyenne** (0,45 $ – 0,65 $), soit **~405 $ pour les 727**,
+fourchette 325 $ – 476 $ selon que les éléments ressemblent au moins ou au plus
+coûteux du pilote.
+
+Deux points qui pèsent sur ce chiffre :
+
+- **Aucune remise de cache.** `cached_input_tokens` vaut 0 sur tous les appels
+  mesurés. Chaque élément est une conversation neuve, et la boucle serveur ne
+  réutilise rien d'un tour à l'autre. Le tarif plein s'applique aux 58 M tokens.
+- **`web_search` n'a aucun compteur publié.** Sur les 29 394 tarifs du service
+  Foundry Models, le seul compteur d'appels d'outil est `file-search`
+  (2,50 $/1000 appels). La recherche web semble donc facturée uniquement par les
+  tokens qu'elle réinjecte — ce qui expliquerait les 80 000 tokens d'entrée par
+  élément. À confirmer sur la facture : l'absence de compteur public n'est pas une
+  preuve de gratuité. Si un compteur existait au tarif de `file-search`, les ~8 000
+  recherches ajouteraient ~20 $, ce qui ne change pas l'ordre de grandeur.
+
+Le même élément relancé trois fois a consommé 55k, 63k et 82k tokens d'entrée pour
+6, 7 et 12 recherches : la variance vient de l'agent, pas du joueur. Une passe
+complète ne sera donc pas reproductible au dollar près.
+
+Reste à faire tourner le pilote sur `gpt-5.4-mini`, déjà déployé (issue o80). C'est
+le seul levier qui ferait vraiment bouger les 400 $.
 
 Deux enseignements du pilote :
 

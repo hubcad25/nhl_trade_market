@@ -41,6 +41,18 @@ BRIEFS_DIR = Path("data/raw/briefs")
 
 PLAYER_TYPES = {"nhl_skater", "nhl_goalie", "skater_prospect", "goalie_prospect"}
 
+# Tarifs gpt-5.5, en $US par million de tokens. Relevés le 2026-07-28 sur l'API de
+# prix Azure (prices.azure.com), compteurs « 5.5 ShortCo … Gl 1M Tokens » — Gl parce
+# que le déploiement est en GlobalStandard.
+#
+# L'outil web_search n'a aucun compteur publié : sur les 29 394 tarifs du service
+# Foundry Models, le seul compteur d'appels d'outil est file-search. La recherche
+# semble donc facturée uniquement par les tokens qu'elle réinjecte. À confirmer sur
+# la facture — l'absence d'un compteur public n'est pas une preuve de gratuité.
+PRICE_INPUT_PER_M = 5.00
+PRICE_CACHED_INPUT_PER_M = 0.50
+PRICE_OUTPUT_PER_M = 30.00
+
 # Les cas déjà validés manuellement (plan.md, section Pilote), plus un joueur NHL
 # établi et un prospect d'élite pour couvrir les trois stades de carrière.
 PILOT_NAMES = [
@@ -192,9 +204,15 @@ def parse_response(response: dict) -> dict:
         "n_searches": len(queries),
         "status": response.get("status"),
         "incomplete_details": response.get("incomplete_details"),
+        # Les tokens d'entrée en cache sont facturés 10x moins cher (0,50 $/M contre
+        # 5,00 $/M sur GlobalStandard) — sans ce détail, l'estimation de coût est
+        # fausse d'un ordre de grandeur, la boucle serveur réinjectant le contexte
+        # à chaque tour.
         "usage": {
             "input_tokens": usage.get("input_tokens"),
+            "cached_input_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens"),
             "output_tokens": usage.get("output_tokens"),
+            "reasoning_tokens": (usage.get("output_tokens_details") or {}).get("reasoning_tokens"),
             "total_tokens": usage.get("total_tokens"),
         },
     }
@@ -270,12 +288,22 @@ def summarize(payloads: list[dict], total_elements: int) -> None:
     log.info("durée           : %6.0fs  (moy. %.0fs)", elapsed, elapsed / n)
     if empty:
         log.warning("briefs vides    : %d", empty)
+    cached = sum((p["usage"].get("cached_input_tokens") or 0) for p in fresh)
+    cost = (
+        (inp - cached) / 1e6 * PRICE_INPUT_PER_M
+        + cached / 1e6 * PRICE_CACHED_INPUT_PER_M
+        + out / 1e6 * PRICE_OUTPUT_PER_M
+    )
+    log.info("dont en cache   : %7d  (%.0f%%)", cached, 100 * cached / inp if inp else 0)
+    log.info("coût            : %9.2f $  (moy. %.3f $)", cost, cost / n)
     log.info(
-        "Extrapolation sur %d éléments : %.0fk tokens entrée, %.0fk sortie, %.0f recherches",
+        "Extrapolation sur %d éléments : %.0fk tokens entrée, %.0fk sortie, "
+        "%.0f recherches, %.0f $",
         total_elements,
         inp / n * total_elements / 1000,
         out / n * total_elements / 1000,
         searches / n * total_elements,
+        cost / n * total_elements,
     )
 
 
