@@ -151,11 +151,25 @@ on the full composition of a trade.
 
 ### Step 5 — Player Research ❌
 - Script: `pipelines/research_player.py` (to write)
-- One LLM agent run per (player, trade date), with web search
+- One request per (player, trade date), to the **Azure OpenAI Responses API with the
+  hosted `web_search` tool** — the model runs the search loop server-side:
+
+  ```
+  POST {AZURE_OPENAI_ENDPOINT}/openai/v1/responses?api-version=preview
+  body  {"model": "gpt-5.5", "input": <prompt>, "tools": [{"type": "web_search"}]}
+  ```
+
+  Output blocks are `reasoning`, `web_search_call`, `message`; source URLs come back
+  as `annotations` on the `message` block. No client-side tool loop, no search API,
+  no page fetching. Billed as Azure OpenAI usage, so covered by the credits.
 - Produces a prose profile of the player as perceived at the trade date, with sources
-  and their publication dates
 - Cached on disk by `(trade_id, element_index)` so reruns cost nothing
 - Output: `data/raw/briefs/`
+
+Grounding with Bing — the Foundry Agent Service route — is **not usable here**: the
+subscription's `quotaId` is `Sponsored_2016-01-01`, and Bing resources are barred on
+sponsored subscriptions (`SkuNotEligible` on SKU G1). The Responses API's `web_search`
+tool reaches search through Azure OpenAI instead, which works. See `plan.md`.
 
 The agent is given the trade context — it needs it to find the right articles — and is
 instructed not to reproduce it. The leaky material stays quarantined in `raw/`.

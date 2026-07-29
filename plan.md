@@ -17,6 +17,40 @@ Une exécution d'agent par paire (joueur, date de trade). L'agent cherche lui-m�
 sur le web et produit un portrait en prose du joueur tel qu'il était perçu à la date
 du trade, avec ses sources et leur date de publication.
 
+### Mécanisme — API Responses Azure avec recherche web hébergée
+
+**Validé le 2026-07-28** : réponse 200 avec les URLs sources en annotations.
+
+```
+POST https://info-4552-resource.cognitiveservices.azure.com/openai/v1/responses?api-version=preview
+header  api-key: <clé du compte info-4552-resource>
+body    {"model": "gpt-5.5", "input": <prompt>, "tools": [{"type": "web_search"}]}
+```
+
+Le modèle **boucle côté serveur**. Les blocs de sortie sont `reasoning`,
+`web_search_call`, `message` ; les URLs des sources sont dans les `annotations`
+du bloc `message`. Il n'y a donc **ni boucle `while tool_calls` à écrire, ni outil
+de recherche à fournir, ni récupération de pages** — Microsoft exécute tout.
+
+Facturé comme usage Azure OpenAI, donc payé par les crédits Opubliq.
+
+Ce que ça remplace : Tavily, Serper, un module de recherche maison et son cache de
+requêtes. Aucun n'est nécessaire.
+
+**Pourquoi pas Grounding with Bing.** C'est le chemin « officiel » côté Foundry
+Agent Service, et il est **bloqué** sur cet abonnement : `SkuNotEligible` sur le SKU
+G1, parce que le `quotaId` est `Sponsored_2016-01-01` — les ressources Bing sont
+interdites sur les abonnements sponsorisés. L'outil `web_search` de l'API Responses
+passe par Azure OpenAI, un chemin distinct qui, lui, fonctionne.
+
+**Pourquoi pas le Foundry Agent Service non plus.** Il apporte une boucle hébergée,
+des threads et de la persistance. La boucle est déjà côté serveur ici, et la
+persistance c'est notre cache disque. Il ne resterait qu'une ressource Azure de plus
+à gérer.
+
+Réserve : `api-version=preview` est une surface instable. D'où la décision de faire
+la passe complète en une fois plutôt que de l'étaler.
+
 ### Cache
 
 Par `(trade_id, element_index)`, sur disque, dans `data/raw/briefs/`. Même logique

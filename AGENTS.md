@@ -2,6 +2,29 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## ⚠️ Beads issues are local-only right now
+
+The JSONL export is broken (`.beads/beads.jsonl` does not exist; `bd doctor` reports
+"Could not read JSONL file"). Issue data lives in the local Dolt database under
+`.beads/dolt/`, which is gitignored — **a fresh clone sees zero issues**.
+
+Consequences:
+- `bd ready` / `bd show` only work in a working copy that already has the Dolt DB
+- `bd sync` in the workflow below will not round-trip issues through git until this
+  is fixed
+- Anything you learn that matters beyond one session belongs in `README.md` or
+  `plan.md`, not only in an issue
+
+## Where the durable context lives
+
+- `README.md` — architecture, which pipeline steps are done, data sources
+- `plan.md` — working design for steps 5-7: the research agent's endpoint and
+  request shape, the anti-leakage prompt, the pilot's test cases
+- `.env.example` — required credentials and the `az` commands that retrieve them
+- `archive/tavily-pipeline-2026-07-28` — the abandoned Tavily/scraper pipeline;
+  `extract_qualitative.py` there has a JSON schema, system prompt and `validate()`
+  worth lifting for step 6
+
 ## Quick Reference
 
 ```bash
