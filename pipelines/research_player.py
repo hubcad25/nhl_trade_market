@@ -15,13 +15,15 @@ Lit  data/resolved/classified_elements.jsonl (éléments joueurs seulement)
 La fuite temporelle est tolérée ici : c'est du brut. L'extraction (E6) fait le ménage.
 
 Usage:
-  python pipelines/research_player.py --pilot          # les 5 cas de plan.md
+  python pipelines/research_player.py --pilot          # les cas de plan.md
   python pipelines/research_player.py --pilot --model gpt-5.4-mini
   python pipelines/research_player.py --limit 20
   python pipelines/research_player.py                  # passe complète (727 éléments)
+  python pipelines/research_player.py --retry-failed    # reprend les échecs seulement
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -65,6 +67,13 @@ PILOT_NAMES = [
     "Graham Sward",       # défenseur WHL, échange de second plan
     "Shea Weber",         # vétéran NHL de premier plan
     "Kevin Fiala",        # attaquant NHL établi en pleine valeur
+    "Joonas Korpisalo",   # gardien établi de la LNH
+    "Michael DiPietro",   # gardien espoir
+    "Charlie Coyle",      # trade récent (2025) — fraîcheur de la recherche web
+    "D Brock Faber",       # espoir en 2022, devenu défenseur étoile — pire cas de rétro-cadrage
+                           # (tsn_name garde le préfixe de position pour ce joueur — non nettoyé
+                           # en amont, cf. classified_elements.jsonl)
+    "Cole Schwindt",      # second espoir, échange de profondeur 2022
 ]
 
 POSITION_LABELS = {
@@ -88,7 +97,7 @@ STAGE_LABELS = {
 # Le numéro de version fait partie du chemin de cache : un changement de prompt rend
 # les briefs incomparables entre eux, et on veut pouvoir mesurer l'effet d'une
 # révision sans perdre le lot précédent. À incrémenter à chaque modification.
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v6"
 
 # v1 : la version de plan.md. Deux clauses portaient le poids — « ni pour choisir quoi
 #      mettre en avant » et « dis-le explicitement plutôt que de combler ». Tenues par
@@ -108,6 +117,28 @@ PROMPT_VERSION = "v4"
 #      coup, qui encadrent le joueur par ce qu'il a rapporté même quand le brief n'en
 #      reprend pas le contenu. gpt-5.5 le faisait aussi, à 13-22 %. v4 interdit la
 #      catégorie de source, pas seulement son contenu.
+#
+#      Relecture manuelle des 10 cas du pilote (pas seulement leurs métriques) :
+#      sur 5 briefs citant quand même une annonce malgré l'interdiction, 4 le
+#      faisaient pour un fait neutre et daté (contrat, statut de repêchage) tiré
+#      de l'annonce du trade RECHERCHÉ — bas risque, le fait ne change pas selon
+#      qui le rapporte. Le seul cas réellement dangereux (Charlie Coyle) citait
+#      l'annonce d'un trade ULTÉRIEUR et différent du même joueur — vérifié après
+#      coup, le fait lui-même (contrat) s'est avéré exact, mais rien dans le
+#      prompt ne le garantissait. Conclusion : filtrer par catégorie de source
+#      (mot-clé dans l'URL) chasse le mauvais signal. Ce qui compte est daté
+#      relativement à quoi, pas d'où ça vient.
+# v5 : cible le vrai risque identifié en v4 — une durée relative (« il reste un an »,
+#      « agent libre l'an prochain ») est exprimée par rapport à la date de
+#      publication de la source, pas à la date du trade. Une source plus récente
+#      que le trade peut donc donner un chiffre juste au moment où elle a été
+#      écrite mais faux une fois reporté tel quel à la date recherchée.
+# v6 : test hors-échantillon sur Jack Eichel (Buffalo → Vegas, 2021-11-04, hors
+#      dataset qui commence en 2022-06). Aucune des 8 rubriques v5 ne correspond à
+#      un conflit joueur-organisation ; le brief a capturé le désaccord médical
+#      prolongé (sous « santé » et « réserves ») mais pas le retrait du capitanat
+#      ni la demande d'échange explicite — les deux faits les plus significatifs
+#      de ce cas, sans rubrique où atterrir. Ajoute une 9e rubrique dédiée.
 PROMPT_TEMPLATE = """Recherche sur le web et produis un portrait de **{name}** tel qu'il était perçu au **{date}**, au moment où il a été échangé.
 
 Contexte de l'échange (pour t'aider à trouver les bons articles — ne le restitue pas dans ta réponse) :
@@ -115,7 +146,9 @@ Contexte de l'échange (pour t'aider à trouver les bons articles — ne le rest
 
 Méthode. Fais une recherche distincte pour chacune des rubriques ci-dessous avant de commencer à rédiger. Si une recherche ne donne rien d'exploitable, reformule-la au moins une fois avant d'abandonner la rubrique. Ne rédige qu'une fois tes recherches terminées.
 
-Rubriques à couvrir : statut et âge, rang de repêchage, niveau de jeu et production récente, forces reconnues, réserves des recruteurs, projection consensuelle, situation contractuelle, santé.
+Rubriques à couvrir : statut et âge, rang de repêchage, niveau de jeu et production récente, forces reconnues, réserves des recruteurs, projection consensuelle, situation contractuelle, santé, climat avec l'organisation.
+
+La rubrique « climat avec l'organisation » couvre tout ce qui explique pourquoi ce joueur est disponible au-delà de sa valeur sportive : conflit ouvert avec la direction ou l'entraîneur, capitanat retiré ou refusé, demande d'échange rendue publique par le joueur ou son agent, dossier disciplinaire, ou toute autre tension rapportée avant la date du trade. S'il n'y a rien de tel dans les sources, dis-le simplement — l'absence de conflit est aussi une information.
 
 Écris comme si tu rédigeais la veille de l'échange, sans aucune connaissance de ce qui s'est passé depuis. N'évalue pas l'échange, ne mentionne pas ce qu'il a rapporté ni qui est allé dans l'autre sens, et n'utilise jamais la carrière ultérieure du joueur — ni explicitement, ni pour choisir quoi mettre en avant.
 
@@ -127,6 +160,7 @@ Règles de sourçage, sans exception :
 - Une affirmation que tu ne peux rattacher à une page que tu as réellement consultée ne doit pas être écrite. Écris « non documenté » à la place.
 - Cela vaut d'abord pour la signalétique — taille, poids, main de tir, date de naissance, rang de repêchage, termes du contrat. Ces chiffres ne s'écrivent jamais de mémoire : soit tu les as lus dans une source consultée, soit ils sont « non documenté ».
 - Si deux sources se contredisent, donne les deux et dis laquelle tu retiens.
+- Une durée relative (« il reste un an sur son contrat », « il devient agent libre la saison prochaine », « il revient de blessure dans deux semaines ») est vraie à la date où la source a été écrite, pas forcément au {date}. Recalcule-la toi-même à partir d'une date fixe (signature du contrat, date de la blessure) plutôt que de recopier la formulation de la source. Si tu ne peux pas la recalculer avec certitude, écris le fait sous forme de date fixe, ou marque-le non documenté.
 
 Un portrait court et entièrement sourcé vaut mieux qu'un portrait complet à moitié deviné. Une rubrique vide est une information utile — ne la comble pas.
 
@@ -209,6 +243,35 @@ def call_agent(prompt: str, model: str, session: requests.Session, retries: int 
     raise RuntimeError(f"Échec après {retries} tentatives")
 
 
+# v4 demande au modèle de ne jamais citer une page qui annonce une transaction —
+# une instruction, pas une garantie. Sur le pilote élargi à 10 cas, le brief de
+# Charlie Coyle a quand même cité un article sur son échange VERS Columbus pour
+# documenter son contrat au moment de l'échange DEPUIS Boston vers Colorado — un
+# trade ultérieur du même joueur, cité comme s'il était contemporain. Ce filtre
+# post-hoc ne corrige rien dans le brief, il sert de signal d'escalade fiable
+# (escalate_briefs.py) là où l'instruction seule ne suffit pas.
+#
+# Pas de filtre par date : les annotations de l'API ne portent pas de date de
+# publication par source, seulement une URL et un titre. Un mot-clé dans l'URL est
+# ce qui a effectivement débusqué le cas Coyle ; une date de publication exigerait
+# de récupérer chaque page.
+TRADE_ANNOUNCEMENT_PATTERN = re.compile(
+    r"(?i)(\btrade\b|traded|trades|\bacquire\b|acquires|acquired|"
+    r"roster-transaction|\breceives\b|\bexchange\b)"
+)
+
+
+def flag_trade_announcement_sources(sources: list[dict]) -> list[str]:
+    """URLs de sources dont le titre ou l'adresse trahit un article sur une
+    transaction — n'importe laquelle, pas forcément celle qu'on recherche."""
+    flagged = []
+    for s in sources:
+        haystack = f"{s.get('url', '')} {s.get('title', '') or ''}"
+        if TRADE_ANNOUNCEMENT_PATTERN.search(haystack):
+            flagged.append(s["url"])
+    return flagged
+
+
 def parse_response(response: dict) -> dict:
     """Extrait le texte du bloc message, ses annotations de sources, et les requêtes
     de recherche effectuées. Les blocs reasoning sont ignorés (chiffrés ou vides)."""
@@ -247,6 +310,7 @@ def parse_response(response: dict) -> dict:
     return {
         "brief": "\n".join(text_parts).strip(),
         "sources": unique_sources,
+        "trade_announcement_sources": flag_trade_announcement_sources(unique_sources),
         "queries": queries,
         "n_searches": len(queries),
         "status": response.get("status"),
@@ -263,6 +327,11 @@ def parse_response(response: dict) -> dict:
             "total_tokens": usage.get("total_tokens"),
         },
     }
+
+
+def is_broken(payload: dict) -> bool:
+    """Un vrai échec — pas de contenu — pas un jugement sur sa qualité."""
+    return payload.get("status") != "completed" or not (payload.get("brief") or "").strip()
 
 
 def load_elements() -> list[dict]:
@@ -362,6 +431,12 @@ def main():
     ap.add_argument("--limit", type=int, help="nombre maximum d'éléments à traiter")
     ap.add_argument("--workers", type=int, default=4, help="appels concurrents (défaut 4)")
     ap.add_argument("--force", action="store_true", help="ignorer le cache et refaire les appels")
+    ap.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="ne traiter que les éléments sans cache ou avec un cache en échec "
+             "(status ≠ completed, brief vide) pour --model ; force ces derniers",
+    )
     ap.add_argument("--dry-run", action="store_true", help="afficher un prompt et sortir")
     ap.add_argument(
         "--model",
@@ -390,6 +465,21 @@ def main():
 
     if args.limit:
         records = records[: args.limit]
+
+    if args.retry_failed:
+        broken = []
+        for rec in records:
+            path = cache_path(rec, model)
+            if not path.exists():
+                broken.append(rec)
+                continue
+            with open(path) as f:
+                if is_broken(json.load(f)):
+                    broken.append(rec)
+        log.info("--retry-failed : %d/%d éléments à reprendre pour %s",
+                 len(broken), len(records), model)
+        records = broken
+        args.force = True  # sans effet sur les absents, nécessaire pour les cassés
 
     if args.dry_run:
         print(build_prompt(records[0]))

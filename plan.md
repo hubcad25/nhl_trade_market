@@ -298,3 +298,71 @@ son contenu. Le seul test qui a trouvé la fuite temporelle a été de lire des 
 en entier et de vérifier chaque URL citée. Avant toute décision de coût qui repose
 sur une comparaison de modèles ou de prompts, relire du texte, pas seulement des
 métriques agrégées.
+
+---
+
+## Escalade abandonnée comme stratégie de qualité — v4→v6 recalibrés sur relecture manuelle
+
+`escalate_briefs.py` a d'abord automatisé l'escalade vers gpt-5.5 sur trois critères :
+moins de 5 sources, plus de 2 « non documenté », une citation d'annonce de
+transaction. Appliqué au pilote (10 cas), ça faisait escalader **9 briefs sur 10** —
+en apparence un signal que le mini est globalement peu fiable.
+
+En relisant les 10 briefs en entier plutôt que ces trois métriques, aucune ne
+prédisait le vrai risque :
+
+- **Peu de sources** (Fiala, Sward, 4 chacun) : contenu bon, joueurs simplement
+  moins couverts. Le seuil de 5 était arbitraire, pas calé sur ce que le mini
+  produit normalement.
+- **« Non documenté »** (Korpisalo, 3 occurrences) : c'est le comportement voulu
+  du prompt — deux jeux de stats contradictoires signalés comme tels plutôt que
+  tranchés au hasard. Compter les occurrences pénalise la prudence.
+- **Citation d'annonce de transaction** (5 des 10 cas) : dans 4 cas sur 5, la
+  source citée annonce le trade **recherché**, pour un fait neutre et daté
+  (contrat, statut de repêchage) — bas risque, le fait ne change pas selon qui le
+  rapporte. Un seul cas (Charlie Coyle) citait l'annonce d'un trade **ultérieur et
+  différent** du même joueur ; vérifié après coup (recherche web), le fait cité —
+  un an restant sur son contrat de 6 ans/31,5 M$ signé en 2019 — s'est avéré exact
+  pour la date recherchée. La catégorie de source est un mauvais proxy pour le
+  risque réel.
+
+**Décision : `escalate_briefs.py` supprimé.** Remplacé par `--retry-failed` dans
+`research_player.py` — reprend uniquement les éléments sans cache ou avec un cache
+en échec véritable (`status != completed`, brief vide), dans le même modèle. Pas de
+second modèle, pas de jugement de qualité automatisé. La qualité se juge en lisant
+(issue c4z), pas en comptant.
+
+### v5 — durées relatives à recalculer
+
+Le cas Coyle a révélé un risque réel même si, cette fois, il ne s'est pas
+matérialisé : une durée relative (« il reste un an sur son contrat », « agent
+libre la saison prochaine ») est vraie à la date de **publication** de la source,
+pas nécessairement à la date du trade recherché. v5 demande au modèle de la
+recalculer depuis une date fixe (signature, date de blessure) plutôt que de la
+recopier telle quelle.
+
+### v6 — la rubrique manquante, trouvée par un cas hors-échantillon
+
+Test final avant la passe complète : **Jack Eichel, Buffalo → Vegas, 2021-11-04**
+— hors du dataset (qui commence en 2022-06), construit à la main pour stress-tester
+un cas où le joueur est disponible pour une raison autre que sportive. Sur v5, le
+brief capturait le désaccord médical (sous « santé » et « réserves ») mais
+manquait les deux faits les plus significatifs du cas réel : le retrait du
+capitanat (23 septembre 2021) et la demande d'échange rendue publique. Pas un
+accident de recherche — **aucune des 8 rubriques ne leur correspondait**.
+
+v6 ajoute une 9e rubrique, « climat avec l'organisation » : conflit avec la
+direction ou l'entraîneur, capitanat retiré ou refusé, demande d'échange publique,
+dossier disciplinaire — avec instruction explicite de dire « rien trouvé » plutôt
+que d'en inventer.
+
+Revalidé sur Eichel (mini) : capitanat retiré, désaccord public depuis mai 2021,
+demandes répétées de l'agent en juillet, demande d'échange publique — tout daté
+avant le trade, 11 sources, aucune fuite sur la suite de carrière. Revalidé sur 3
+cas sans controverse (Weber, Fiala, Faber) : la rubrique répond « aucune trace
+documentée » plutôt que d'inventer une tension — pas de bruit ajouté sur le cas
+normal. Un seul résidu mineur : Weber cite une lettre de remerciement publiée
+après le trade pour appuyer l'absence de conflit — hors-instruction sur la
+catégorie de source, mais le contenu ne fuit rien.
+
+**v6 est la version retenue pour la passe complète.**
