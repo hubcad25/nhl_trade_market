@@ -9,12 +9,14 @@ Produit un brief en prose du joueur tel qu'il était perçu à la date du trade,
 les URLs sources tirées des annotations du bloc message.
 
 Lit  data/resolved/classified_elements.jsonl (éléments joueurs seulement)
-Écrit data/raw/briefs/{trade_id}-{one|two}-{element_index}.json (un fichier = un cache)
+Écrit data/raw/briefs/{modèle}/{trade_id}-{one|two}-{element_index}.json
+      (un fichier = un cache)
 
 La fuite temporelle est tolérée ici : c'est du brut. L'extraction (E6) fait le ménage.
 
 Usage:
   python pipelines/research_player.py --pilot          # les 5 cas de plan.md
+  python pipelines/research_player.py --pilot --model gpt-5.4-mini
   python pipelines/research_player.py --limit 20
   python pipelines/research_player.py                  # passe complète (727 éléments)
 """
@@ -41,17 +43,19 @@ BRIEFS_DIR = Path("data/raw/briefs")
 
 PLAYER_TYPES = {"nhl_skater", "nhl_goalie", "skater_prospect", "goalie_prospect"}
 
-# Tarifs gpt-5.5, en $US par million de tokens. Relevés le 2026-07-28 sur l'API de
-# prix Azure (prices.azure.com), compteurs « 5.5 ShortCo … Gl 1M Tokens » — Gl parce
-# que le déploiement est en GlobalStandard.
+# Tarifs en $US par million de tokens : (entrée, entrée en cache, sortie).
+# Relevés le 2026-07-28 sur l'API de prix Azure (prices.azure.com), compteurs
+# « … Gl 1M Tokens » — Gl parce que les deux déploiements sont en GlobalStandard
+# (vérifié avec `az cognitiveservices account deployment list`).
 #
 # L'outil web_search n'a aucun compteur publié : sur les 29 394 tarifs du service
 # Foundry Models, le seul compteur d'appels d'outil est file-search. La recherche
 # semble donc facturée uniquement par les tokens qu'elle réinjecte. À confirmer sur
 # la facture — l'absence d'un compteur public n'est pas une preuve de gratuité.
-PRICE_INPUT_PER_M = 5.00
-PRICE_CACHED_INPUT_PER_M = 0.50
-PRICE_OUTPUT_PER_M = 30.00
+PRICES_PER_M = {
+    "gpt-5.5": (5.00, 0.50, 30.00),
+    "gpt-5.4-mini": (0.75, 0.075, 4.50),
+}
 
 # Les cas déjà validés manuellement (plan.md, section Pilote), plus un joueur NHL
 # établi et un prospect d'élite pour couvrir les trois stades de carrière.
@@ -93,12 +97,16 @@ Couvre : statut et âge, rang de repêchage, niveau de jeu et production récent
 Cite tes sources avec leur date de publication. Si l'information est mince, dis-le explicitement plutôt que de combler."""
 
 
-def cache_path(rec: dict) -> Path:
-    """Un fichier par élément. `element_index` est relatif au côté de l'échange,
-    donc la clé doit inclure `receives_key` — sinon les deux côtés d'un même trade
-    se marchent dessus."""
+def cache_path(rec: dict, model: str) -> Path:
+    """Un fichier par élément, sous un dossier par modèle.
+
+    `element_index` est relatif au côté de l'échange, donc la clé doit inclure
+    `receives_key` — sinon les deux côtés d'un même trade se marchent dessus. Le
+    dossier par modèle permet de comparer deux modèles sur les mêmes éléments sans
+    que l'un écrase les briefs de l'autre.
+    """
     side = "one" if rec["receives_key"] == "team_one_receives" else "two"
-    return BRIEFS_DIR / f"{rec['trade_id']}-{side}-{rec['element_index']}.json"
+    return BRIEFS_DIR / model / f"{rec['trade_id']}-{side}-{rec['element_index']}.json"
 
 
 def build_context(rec: dict) -> str:
@@ -129,7 +137,7 @@ def build_prompt(rec: dict) -> str:
     )
 
 
-def call_agent(prompt: str, session: requests.Session, retries: int = 5) -> dict:
+def call_agent(prompt: str, model: str, session: requests.Session, retries: int = 5) -> dict:
     """POST /openai/v1/responses avec l'outil web_search. Le modèle boucle côté serveur."""
     endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
     url = f"{endpoint}/openai/v1/responses"
@@ -139,7 +147,7 @@ def call_agent(prompt: str, session: requests.Session, retries: int = 5) -> dict
         "Content-Type": "application/json",
     }
     body = {
-        "model": os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.5"),
+        "model": model,
         "input": prompt,
         "tools": [{"type": "web_search"}],
     }
@@ -231,16 +239,16 @@ def load_elements() -> list[dict]:
     return records
 
 
-def research(rec: dict, session: requests.Session, force: bool) -> tuple[dict, bool]:
+def research(rec: dict, model: str, session: requests.Session, force: bool) -> tuple[dict, bool]:
     """Retourne (payload, from_cache)."""
-    path = cache_path(rec)
+    path = cache_path(rec, model)
     if path.exists() and not force:
         with open(path) as f:
             return json.load(f), True
 
     prompt = build_prompt(rec)
     started = time.monotonic()
-    response = call_agent(prompt, session)
+    response = call_agent(prompt, model, session)
     parsed = parse_response(response)
 
     payload = {
@@ -251,7 +259,7 @@ def research(rec: dict, session: requests.Session, force: bool) -> tuple[dict, b
         "player_name": rec["element"]["tsn_name"],
         "nhl_id": rec["element"]["nhl_id"],
         "type_classified": rec["element"]["type_classified"],
-        "model": os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.5"),
+        "model": model,
         "api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "preview"),
         "prompt": prompt,
         "elapsed_s": round(time.monotonic() - started, 1),
@@ -268,7 +276,7 @@ def research(rec: dict, session: requests.Session, force: bool) -> tuple[dict, b
     return payload, False
 
 
-def summarize(payloads: list[dict], total_elements: int) -> None:
+def summarize(payloads: list[dict], total_elements: int, model: str) -> None:
     """Ce qu'il faut pour extrapoler le coût de la passe complète (issue o80)."""
     fresh = [p for p in payloads if p.get("usage", {}).get("total_tokens")]
     if not fresh:
@@ -281,7 +289,7 @@ def summarize(payloads: list[dict], total_elements: int) -> None:
     elapsed = sum(p.get("elapsed_s") or 0 for p in fresh)
     empty = sum(1 for p in fresh if not p["brief"])
 
-    log.info("--- Mesures sur %d appels réels ---", n)
+    log.info("--- Mesures sur %d appels réels (%s) ---", n, model)
     log.info("tokens entrée   : %7d  (moy. %.0f)", inp, inp / n)
     log.info("tokens sortie   : %7d  (moy. %.0f)", out, out / n)
     log.info("recherches web  : %7d  (moy. %.1f)", searches, searches / n)
@@ -289,10 +297,11 @@ def summarize(payloads: list[dict], total_elements: int) -> None:
     if empty:
         log.warning("briefs vides    : %d", empty)
     cached = sum((p["usage"].get("cached_input_tokens") or 0) for p in fresh)
+    p_in, p_cached, p_out = PRICES_PER_M[model]
     cost = (
-        (inp - cached) / 1e6 * PRICE_INPUT_PER_M
-        + cached / 1e6 * PRICE_CACHED_INPUT_PER_M
-        + out / 1e6 * PRICE_OUTPUT_PER_M
+        (inp - cached) / 1e6 * p_in
+        + cached / 1e6 * p_cached
+        + out / 1e6 * p_out
     )
     log.info("dont en cache   : %7d  (%.0f%%)", cached, 100 * cached / inp if inp else 0)
     log.info("coût            : %9.2f $  (moy. %.3f $)", cost, cost / n)
@@ -314,7 +323,15 @@ def main():
     ap.add_argument("--workers", type=int, default=4, help="appels concurrents (défaut 4)")
     ap.add_argument("--force", action="store_true", help="ignorer le cache et refaire les appels")
     ap.add_argument("--dry-run", action="store_true", help="afficher un prompt et sortir")
+    ap.add_argument(
+        "--model",
+        default=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-5.5"),
+        choices=sorted(PRICES_PER_M),
+        help="déploiement Azure à interroger (défaut : AZURE_OPENAI_DEPLOYMENT)",
+    )
     args = ap.parse_args()
+
+    model = args.model
 
     records = load_elements()
     total_elements = len(records)
@@ -343,8 +360,8 @@ def main():
         if not os.environ.get(var):
             raise SystemExit(f"{var} manquant — voir .env.example")
 
-    BRIEFS_DIR.mkdir(parents=True, exist_ok=True)
-    cached = sum(1 for rec in records if cache_path(rec).exists())
+    (BRIEFS_DIR / model).mkdir(parents=True, exist_ok=True)
+    cached = sum(1 for rec in records if cache_path(rec, model).exists())
     log.info("%d éléments à traiter (%d déjà en cache) sur %d au total",
              len(records), cached, total_elements)
 
@@ -354,7 +371,7 @@ def main():
     lock = threading.Lock()
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(research, rec, session, args.force): rec for rec in records}
+        futures = {executor.submit(research, rec, model, session, args.force): rec for rec in records}
         for future in as_completed(futures):
             rec = futures[future]
             try:
@@ -375,7 +392,7 @@ def main():
                     )
 
     log.info("Terminé — %d/%d éléments, %d nouveaux appels", done, len(records), len(payloads))
-    summarize(payloads, total_elements)
+    summarize(payloads, total_elements, model)
 
 
 if __name__ == "__main__":

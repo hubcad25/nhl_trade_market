@@ -152,8 +152,50 @@ Le même élément relancé trois fois a consommé 55k, 63k et 82k tokens d'entr
 6, 7 et 12 recherches : la variance vient de l'agent, pas du joueur. Une passe
 complète ne sera donc pas reproductible au dollar près.
 
-Reste à faire tourner le pilote sur `gpt-5.4-mini`, déjà déployé (issue o80). C'est
-le seul levier qui ferait vraiment bouger les 400 $.
+### gpt-5.4-mini — 12 $ au lieu de 405 $, mais il invente
+
+Mêmes 5 cas, même prompt, `--model gpt-5.4-mini` (tarifs Gl : 0,75 $/M entrée,
+0,075 $/M en cache, 4,50 $/M sortie).
+
+| | gpt-5.5 | gpt-5.4-mini |
+|---|---|---|
+| tokens entrée / élément | 80 000 | 15 600 |
+| tokens sortie / élément | 5 200 | 1 500 |
+| recherches / élément | 11,0 | 2,4 |
+| durée / élément | 110 s | 15 s |
+| coût / élément | 0,56 $ | 0,017 $ |
+| **passe de 727** | **~405 $** | **~12 $** |
+
+Le mini écrit des briefs de longueur comparable (3 800 – 5 600 caractères contre
+4 900 – 8 200) à partir de **quatre fois moins de recherches**. C'est le problème,
+pas l'économie : il produit autant de prose avec deux fois moins de sources.
+
+| caractères de prose par source citée | gpt-5.5 | gpt-5.4-mini |
+|---|---|---|
+| Kyle Criscuolo | 632 | 753 |
+| Kevin Fiala | 908 | 970 |
+| Shea Weber | 902 | 1 127 |
+| Nils Juntorp | 815 | **2 407** |
+| Graham Sward | 822 | **2 475** |
+
+Sur les deux joueurs les moins couverts — exactement ceux pour qui la recherche a de
+la valeur — le mini fait une seule recherche et écrit 4 800 caractères. La différence
+sort de sa mémoire paramétrique, pas du web.
+
+**Défaillance concrète.** Dans le brief de Juntorp, le mini écrit « 6'1", 196 lb,
+**gaucher au tir** » puis, deux paragraphes plus bas, « âge, taille, **tir droitier** » —
+les deux attribués à EliteProspects, dans le même brief. gpt-5.5 écrit « il tire de la
+droite » et cite une source distincte. Le mini n'a pas seulement halluciné : il s'est
+contredit sans le voir, sur une fiche signalétique triviale à vérifier.
+
+**Décision : rester sur gpt-5.5 pour la passe complète.** L'écart de 390 $ est réel,
+mais le dataset d'entraînement se construit une fois et l'étape 6 extrait des profils
+structurés à partir de ces briefs — une hallucination non détectée à l'étape 5 se
+propage jusqu'au modèle fine-tuné. 390 $ contre un corpus contaminé, ce n'est pas
+un arbitrage serré.
+
+Les briefs du mini restent dans `data/raw/briefs/gpt-5.4-mini/` : ils serviront de
+point de comparaison si le détecteur d'hallucination (n7z) a besoin de cas positifs.
 
 Deux enseignements du pilote :
 
