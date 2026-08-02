@@ -12,15 +12,17 @@ Pour chaque élément de type 'player', détermine le type classificé:
 Output: data/resolved/classified_elements.jsonl
 """
 
+import sys
 import json
-import time
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import date
 
-import requests
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from pipelines.sources.nhl_api import nhl_get, get_available_seasons  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -30,50 +32,6 @@ NHL_PROSPECT_GP_THRESHOLD = 25
 TRADES_PATH = Path("data/normalized/trades.jsonl")
 PLAYER_MAP_PATH = Path("data/resolved/player_id_map.json")
 OUTPUT_PATH = Path("data/resolved/classified_elements.jsonl")
-
-
-_request_lock = threading.Lock()
-_last_request_time = 0.0
-REQUEST_INTERVAL = 1.0  # seconds between requests globally
-
-
-def nhl_get(url: str, retries: int = 8) -> dict:
-    """GET with exponential backoff on 429 / transient errors, and global rate limiting."""
-    global _last_request_time
-    delay = 2.0
-    for attempt in range(retries):
-        # Global rate limiter — at most 1 request every REQUEST_INTERVAL seconds
-        with _request_lock:
-            now = time.monotonic()
-            wait_for = REQUEST_INTERVAL - (now - _last_request_time)
-            if wait_for > 0:
-                time.sleep(wait_for)
-            _last_request_time = time.monotonic()
-
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code == 429:
-                wait = delay * (2 ** attempt)
-                log.warning("429 on %s — sleeping %.1fs", url, wait)
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            return r.json()
-        except requests.RequestException as e:
-            wait = delay * (2 ** attempt)
-            log.warning("Error %s on %s — sleeping %.1fs", e, url, wait)
-            time.sleep(wait)
-    raise RuntimeError(f"Failed after {retries} attempts: {url}")
-
-
-def get_available_seasons(nhl_id: int) -> list[int]:
-    """Return list of NHL regular-season season IDs available for this player."""
-    data = nhl_get(f"https://api-web.nhle.com/v1/player/{nhl_id}/game-log/now")
-    return [
-        s["season"]
-        for s in data.get("playerStatsSeasons", [])
-        if 2 in s.get("gameTypes", [])
-    ]
 
 
 def get_gp_and_position_before_date(nhl_id: int, trade_date: str) -> tuple[int, str]:
