@@ -27,7 +27,27 @@ Phoenix/Arizona/Utah) : le classement NHL renvoie l'abréviation de l'époque
 (ex: PHX avant 2014), alors que nos données normalisent au nom de franchise
 actuel (ARI) — on essaie les alias connus avant d'abandonner.
 
+Override par texte libre (issue trouvée en relisant wm9) : le schéma TSN structuré
+des picks (round/year/isConditional/title) ne porte JAMAIS l'équipe d'origine — pas
+un oubli de normalize_trades.py, c'est absent de la source. `original_owner` était
+jusqu'ici juste giving_team (l'équipe qui envoie CE pick DANS CE trade), ce qui est
+faux dès qu'un pick a déjà changé de mains une fois (ex: trade 1548 — le 2022 1er
+tour envoyé par MTL à CHI pour Kirby Dach était en fait le pick des Islanders,
+acquis par MTL le même jour dans le trade 1544, ré-échangé quelques heures plus
+tard). Le champ libre `informations` de TSN donne parfois le numéro overall exact
+et/ou l'équipe d'origine explicitement — extrait ici quand présent :
+  - "TEAM receive(s)/acquire(s) No. X [and Y...] overall" → numéro exact du pick,
+    remplace l'estimation par classement (pick_number_source=informations_text)
+  - "originally belonging to TEAM" → équipe d'origine confirmée
+    (original_owner_source=informations_text)
+Corrige seulement les cas où le texte le dit explicitement (~10 trades sur 2157).
+Le reste garde l'ancienne hypothèse original_owner=giving_team, non vérifiée —
+tracée honnêtement via original_owner_source=giving_team_assumption. Un vrai
+correctif général demanderait de rejouer tout l'historique des trades pour tracer
+la lignée de chaque pick (issue à part, pas fait ici).
+
 Lit  data/resolved/classified_elements.jsonl (éléments type_classified='pick')
+     data/normalized/trades.jsonl (champ informations, texte libre)
 Écrit data/raw/picks/{trade_id}-{one|two}-{index}.json (cache, un fichier par élément)
       data/enriched/picks.jsonl (assemblage final, réécrit à chaque run)
 
@@ -42,7 +62,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
+import unicodedata
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -54,8 +76,141 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 CLASSIFIED_PATH = Path("data/resolved/classified_elements.jsonl")
+TRADES_PATH = Path("data/normalized/trades.jsonl")
 PICKS_CACHE_DIR = Path("data/raw/picks")
 PICKS_PATH = Path("data/enriched/picks.jsonl")
+
+NUMBER_RE = re.compile(r"\b(\d{1,3})(?:st|nd|rd|th)?\b(?!\s*(?:per\s*cent|percent|%))")
+ORIGINALLY_BELONGING_RE = re.compile(
+    r"originally\s+belonging\s+to\s+(?:the\s+)?([A-Za-z .'-]+?)(?:[.,]|$)", re.IGNORECASE
+)
+
+
+def strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+
+def team_aliases(team: dict) -> list[str]:
+    """Nom complet sans accents + short + chaque mot significatif (>=4 lettres) —
+    les blurbs TSN nomment parfois juste le surnom ('Blackhawks') ou la ville
+    ('Montreal') plutôt que le nom complet de l'équipe."""
+    name = strip_accents(team["name"])
+    words = [w for w in name.split() if len(w) >= 4]
+    return sorted(set([name, team["short"]] + words), key=len, reverse=True)
+
+
+def find_team_mentions(text_flat: str, team_one: dict, team_two: dict) -> list[tuple[int, str]]:
+    mentions = []
+    for label, team in (("team_one", team_one), ("team_two", team_two)):
+        for alias in team_aliases(team):
+            for m in re.finditer(re.escape(alias), text_flat):
+                mentions.append((m.start(), label))
+    mentions.sort()
+    dedup: list[tuple[int, str]] = []
+    for pos, label in mentions:
+        if any(abs(pos - p2) < 3 and l2 == label for p2, l2 in dedup):
+            continue
+        dedup.append((pos, label))
+    dedup.sort()
+    return dedup
+
+
+def extract_numbers_by_side(informations: str | None, team_one: dict, team_two: dict) -> dict[str, list[int]]:
+    """{'team_one': [numéros overall reçus par team_one], 'team_two': [...]} en
+    scindant le texte sur les mentions d'équipe. Vide si le texte ne mentionne pas
+    explicitement de numéro overall."""
+    empty = {"team_one": [], "team_two": []}
+    if not informations or not re.search(r"overall|No\.\s*\d|#\s*\d", informations):
+        return empty
+
+    text_flat = strip_accents(informations)
+    mentions = find_team_mentions(text_flat, team_one, team_two)
+
+    if not mentions:
+        return empty
+
+    result = {"team_one": [], "team_two": []}
+    for i, (pos, label) in enumerate(mentions):
+        end = mentions[i + 1][0] if i + 1 < len(mentions) else len(text_flat)
+        chunk = text_flat[pos:end]
+        result[label].extend(int(n) for n in NUMBER_RE.findall(chunk))
+    return result
+
+
+def build_pick_number_overrides(trades: dict[int, dict]) -> dict[tuple, int]:
+    """{(trade_id, receives_key, element_index): numéro overall exact} — seulement
+    quand le compte de numéros extraits égale le compte d'éléments 'pick' de ce
+    côté (sinon ambiguïté, on n'assigne rien plutôt que de deviner l'ordre).
+
+    Repli : si le texte ne mentionne aucune des deux équipes du trade (ex: "Draft
+    pick is 37th overall, originally belonging to X" — X est un TROISIÈME club,
+    ni team_one ni team_two) mais que le trade n'a qu'un seul élément 'pick' au
+    total et un seul numéro dans le texte, l'affectation reste sans ambiguïté."""
+    overrides: dict[tuple, int] = {}
+    for trade_id, trade in trades.items():
+        info = trade.get("informations")
+        by_side = extract_numbers_by_side(info, trade["team_one"], trade["team_two"])
+        assigned_this_trade = False
+        for label, receives_key in (("team_one", "team_one_receives"), ("team_two", "team_two_receives")):
+            nums = by_side[label]
+            if not nums:
+                continue
+            pick_indices = [i for i, el in enumerate(trade.get(receives_key, [])) if el.get("type") == "pick"]
+            if len(pick_indices) != len(nums):
+                continue
+            for idx, num in zip(pick_indices, nums):
+                overrides[(trade_id, receives_key, idx)] = num
+            assigned_this_trade = True
+
+        if assigned_this_trade or not info or not re.search(r"overall|No\.\s*\d|#\s*\d", info):
+            continue
+
+        all_pick_keys = [
+            (receives_key, i)
+            for receives_key in ("team_one_receives", "team_two_receives")
+            for i, el in enumerate(trade.get(receives_key, []))
+            if el.get("type") == "pick"
+        ]
+        bare_numbers = NUMBER_RE.findall(strip_accents(info))
+        if len(all_pick_keys) == 1 and len(bare_numbers) == 1:
+            receives_key, idx = all_pick_keys[0]
+            overrides[(trade_id, receives_key, idx)] = int(bare_numbers[0])
+    return overrides
+
+
+def build_team_registry(trades: dict[int, dict]) -> list[dict]:
+    seen = {}
+    for trade in trades.values():
+        for team in (trade["team_one"], trade["team_two"]):
+            seen[team["short"]] = team
+    return list(seen.values())
+
+
+def build_original_owner_overrides(trades: dict[int, dict], registry: list[dict]) -> dict[tuple, str]:
+    """{(trade_id, receives_key, element_index): short d'équipe} depuis un blurb
+    'originally belonging to TEAM' — s'applique seulement quand le côté receveur
+    n'a qu'un seul élément 'pick' (pas d'ambiguïté sur lequel)."""
+    overrides: dict[tuple, str] = {}
+    for trade_id, trade in trades.items():
+        info = trade.get("informations")
+        if not info:
+            continue
+        m = ORIGINALLY_BELONGING_RE.search(strip_accents(info))
+        if not m:
+            continue
+        mentioned = m.group(1).strip()
+        match = None
+        for team in registry:
+            if any(alias == mentioned or alias in mentioned or mentioned in alias for alias in team_aliases(team)):
+                match = team["short"]
+                break
+        if not match:
+            continue
+        for receives_key in ("team_one_receives", "team_two_receives"):
+            pick_indices = [i for i, el in enumerate(trade.get(receives_key, [])) if el.get("type") == "pick"]
+            if len(pick_indices) == 1:
+                overrides[(trade_id, receives_key, pick_indices[0])] = match
+    return overrides
 
 # Relocations de franchise dans la fenêtre couverte (2005-présent). Le classement
 # NHL renvoie l'abréviation en usage à trade_date ; nos données normalisent au
@@ -155,34 +310,50 @@ def estimate_pick_range(draft_rank: int, round_num: int, num_teams: int) -> str:
     return f"{lo}-{hi}"
 
 
-def enrich(rec: dict, standings_cache: dict[str, list[dict]]) -> dict:
+def enrich(
+    rec: dict,
+    standings_cache: dict[str, list[dict]],
+    number_overrides: dict[tuple, int],
+    owner_overrides: dict[tuple, str],
+) -> dict:
     raw = rec["element"]["raw_tsn_element"]
     round_num = raw["round"]
     draft_year = raw["year"]
     is_conditional = raw["is_conditional"]
-    original_owner = rec["giving_team"]["short"]
     trade_date = rec["trade_date"]
     trade_year = int(trade_date[:4])
+    key = (rec["trade_id"], rec["receives_key"], rec["element_index"])
 
-    delta = draft_year - trade_year if draft_year is not None else None
-    formula_scope = round_num in (1, 2) and delta in (0, 1)
+    owner_hint = owner_overrides.get(key)
+    original_owner = owner_hint or rec["giving_team"]["short"]
+    original_owner_source = "informations_text" if owner_hint else "giving_team_assumption"
 
+    number_hint = number_overrides.get(key)
+    pick_number_source: str | None = None
     estimated_pick_range: str | None = None
-    if formula_scope:
-        if is_conditional:
-            estimated_pick_range = "conditionnel"
-        else:
-            standings = get_standings_near(trade_date, standings_cache)
-            row = resolve_team_row(standings, original_owner) if standings else None
-            if row is None:
-                log.warning(
-                    "Classement introuvable pour %s à %s (trade_id=%s) — estimated_pick_range=null",
-                    original_owner, trade_date, rec["trade_id"],
-                )
+
+    if number_hint is not None and not is_conditional:
+        estimated_pick_range = str(number_hint)
+        pick_number_source = "informations_text"
+    else:
+        delta = draft_year - trade_year if draft_year is not None else None
+        formula_scope = round_num in (1, 2) and delta in (0, 1)
+        if formula_scope:
+            if is_conditional:
+                estimated_pick_range = "conditionnel"
             else:
-                num_teams = len(standings)
-                draft_rank = num_teams + 1 - row["league_rank"]
-                estimated_pick_range = estimate_pick_range(draft_rank, round_num, num_teams)
+                standings = get_standings_near(trade_date, standings_cache)
+                row = resolve_team_row(standings, original_owner) if standings else None
+                if row is None:
+                    log.warning(
+                        "Classement introuvable pour %s à %s (trade_id=%s) — estimated_pick_range=null",
+                        original_owner, trade_date, rec["trade_id"],
+                    )
+                else:
+                    num_teams = len(standings)
+                    draft_rank = num_teams + 1 - row["league_rank"]
+                    estimated_pick_range = estimate_pick_range(draft_rank, round_num, num_teams)
+                pick_number_source = "standings_formula"
 
     return {
         "trade_id": rec["trade_id"],
@@ -194,10 +365,21 @@ def enrich(rec: dict, standings_cache: dict[str, list[dict]]) -> dict:
             "round": round_num,
             "draft_year": draft_year,
             "original_owner": original_owner,
+            "original_owner_source": original_owner_source,
             "is_conditional": is_conditional,
             "estimated_pick_range": estimated_pick_range,
+            "pick_number_source": pick_number_source,
         },
     }
+
+
+def load_trades() -> dict[int, dict]:
+    trades = {}
+    with open(TRADES_PATH) as f:
+        for line in f:
+            t = json.loads(line)
+            trades[t["trade_id"]] = t
+    return trades
 
 
 def main() -> None:
@@ -208,6 +390,14 @@ def main() -> None:
 
     picks = load_picks(args.limit)
     log.info("%d éléments 'pick' à traiter", len(picks))
+
+    trades = load_trades()
+    number_overrides = build_pick_number_overrides(trades)
+    owner_overrides = build_original_owner_overrides(trades, build_team_registry(trades))
+    log.info(
+        "%d numéros de pick et %d équipes d'origine confirmés depuis le texte libre TSN",
+        len(number_overrides), len(owner_overrides),
+    )
 
     PICKS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     standings_cache: dict[str, list[dict]] = {}
@@ -220,7 +410,7 @@ def main() -> None:
                 results.append(json.load(f))
             continue
 
-        payload = enrich(rec, standings_cache)
+        payload = enrich(rec, standings_cache, number_overrides, owner_overrides)
         tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)

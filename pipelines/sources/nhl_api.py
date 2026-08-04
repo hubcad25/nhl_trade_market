@@ -72,6 +72,17 @@ def _season_id_for_date(d: date) -> int:
     return start_year * 10000 + (start_year + 1)
 
 
+def get_player_bio(nhl_id: int) -> dict:
+    """Date de naissance et gabarit seuls, sans le reste du landing — aucun des deux
+    ne dépend de trade_date, contrairement à get_player_landing."""
+    data = nhl_get(f"https://api-web.nhle.com/v1/player/{nhl_id}/landing")
+    return {
+        "birth_date": data.get("birthDate"),
+        "height_in": data.get("heightInInches"),
+        "weight_lb": data.get("weightInPounds"),
+    }
+
+
 def get_player_landing(nhl_id: int, trade_date: str) -> dict:
     """
     Retourne un instantané du landing du joueur à la date du trade :

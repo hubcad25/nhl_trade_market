@@ -82,41 +82,45 @@ that is the prediction target.
 Each training example is a (prompt, JSON) pair. Player names are **excluded** from
 prompts — the model learns from characteristics, not identities.
 
-**Input prompt example (NHL Skater):**
+**Real example, from `data/training/dataset.jsonl` (trade 1548 — Kirby Dach to
+Montreal, 2022-07-07):**
 ```
-Position: C, depth (3rd-4th line)
-Age: 31, rental (UFA end of season)
-Cap hit: $1.5M (50% retained)
-Stats: 43 GP, 8G 4A, 0.28 pts/GP, 13:40 TOI, 56.7% FO, 78 hits
-Context: defensive center known for elite PK, energy and forecheck,
-         locker room leadership, reliable depth forward.
+Date: 2022-07-07
+Type: NHL skater
+Position: C
+Age: 21
+Height: 6'4"
+Stats: 70 GP, 9G 17A, 0.37 pts/GP, 18:02 TOI
+Context: 21-year-old right-shot center, 152 NHL games; big two-way pivot with
+         size, puck distribution, transition game and creative top-six upside,
+         but inconsistent pace, skating burst and night-to-night impact. 26
+         points in 70 games in 2021-22; RFA status, notable wrist injury
+         history, development viewed as high-ceiling yet riskier than peers.
 Traded with: []
-Market context: trade deadline, selling team
+Market context: offseason
 
 What package does this player return in a trade?
 ```
 
-**Output JSON example:**
+**Output JSON:**
 ```json
 {
-  "traded_with": [],
-  "return": {
-    "players": [],
-    "picks": [
-      {
-        "tier": "3rd_round",
-        "year": 2026,
-        "conditional": true,
-        "condition": "becomes 2nd if acquiring team makes playoffs"
-      }
-    ]
-  }
+  "players": [],
+  "picks": [
+    {"round": 1, "draft_year": 2022, "conditional": false, "estimated_pick_range": "13"},
+    {"round": 2, "draft_year": 2022, "conditional": false, "estimated_pick_range": "66"}
+  ],
+  "future_considerations": []
 }
 ```
 
-The `traded_with` field contains full profiles of co-traded assets, using the same schema
-as the main player. This allows the model to learn that return packages are conditional
-on the full composition of a trade.
+`Traded with` (empty here, non-empty for multi-asset packages) carries full
+profiles of co-sent assets — same schema as the subject player, still nameless —
+so the model learns that a return depends on the whole package, not just the
+headline piece. The output's players (empty in this example) get the same full
+anonymized profile, not just a category label: a target reduced to `{type,
+position}` would teach the model to classify roles instead of predicting an
+actual return.
 
 ---
 
@@ -185,32 +189,65 @@ against cached briefs without repeating a single web search. A prior version of 
 step, written against Tavily article text, is on the archive branch — its JSON schema,
 system prompt and `validate()` function are worth lifting.
 
-### Step 7 — Deterministic Enrichment ❌
-Three things that must never come from the agent:
+### Step 7 — Deterministic Enrichment ✅
+Things that must never come from the agent:
 
-- **Stats cut at the trade date** — from the NHL game log. Also serves as a
-  hallucination check: compare against any stats the agent asserts, and flag the gaps
-- **Pick tiers** — 456 elements, from NHL standings at the trade date. No code yet
+- **Stats cut at the trade date** — `enrich_stats.py`, from the NHL game log
+  (season + career blocks). 716/727 elements (11 with no resolved `nhl_id`)
+- **Age and height at the trade date** — `enrich_bio.py`, one NHL API call per
+  unique `nhl_id` (birth date + height don't depend on trade date, only age does —
+  recomputed locally per trade). 718/727 elements. Weight deliberately omitted: it
+  isn't a fixed adult quantity like height, and the landing endpoint only gives a
+  present-day snapshot, not a value at trade_date — including it would leak
+  present into past for older trades
+- **Pick tiers** — `enrich_pick.py`, 2179 pick elements dataset-wide, from NHL
+  standings at trade date. See the `original_owner` caveat below
 - **The output JSON** — the target label, built from `data/normalized/trades.jsonl`
+
+**`original_owner` caveat.** TSN's structured pick schema (`round`/`year`/
+`isConditional`/`title`) never records which team's natural draft slot a pick
+is — not a normalization gap, it's simply absent from the source. `enrich_pick.py`
+originally assumed `original_owner` = whichever team handed the pick over *in that
+trade*, which breaks the moment a pick has already changed hands once (found via a
+user review of trade 1548: Montreal's pick sent to Chicago for Kirby Dach was
+labeled `original_owner: MTL`, but it was actually the Islanders' natural 2022
+1st — acquired by Montreal hours earlier the same day in trade 1544 — so the
+standings-based tier estimate used Montreal's terrible 2021-22 season instead of
+the Islanders' mid-table one, producing "top 4" for what was actually pick #13).
+
+Fix applied: TSN's free-text `informations` field sometimes states the exact
+overall pick number and/or the true original team explicitly (editorial blurb, not
+structured data) — extracted via `build_pick_number_overrides`/
+`build_original_owner_overrides` in `enrich_pick.py` when unambiguous (side's pick
+count matches the count of numbers found). Covers 19/2179 pick numbers and 1/2179
+original owners confirmed with certainty — `pick["pick_number_source"]` and
+`pick["original_owner_source"]` mark which. The remaining ~99% still carry
+`original_owner_source: giving_team_assumption`, unverified. A general fix (replay
+all 2157 trades chronologically, track per-(team, round, year) holder) is possible
+whenever a team holds only one pick of that (round, year) at re-trade time — proven
+on the Dach case, since Montreal's own natural 2022 1st was never traded (used on
+Slafkovský) — but not built. Follow-up: `nhl_trade_market-4v9`.
 
 ### Step 8 — Build Training Dataset ✅
 - Script: `pipelines/build_training_dataset.py`
 - One example per player element among the 727 with a completed E6 profile (399
   TSN-sourced trades, 2022-06 to present — the nhltradetracker extension to 2005 has
   no E5 research pass yet, see caveat below)
-- `traded_with` = other elements sent in the same package (same `receives_key`,
-  other indices): full profile for players, compact tier for picks, raw text for
-  future considerations
-- `output` (the target) = the other side's return: picks with tier (from
-  `enrich_pick.py`), players reduced to `{type, position}` — no formula for player
-  value exists (unlike picks), so nothing is invented — future considerations as text
-- No cap hit, structured contract status, or `age_at_trade`: no pipeline step
-  computes them deterministically. The research agent's prose mentions age/contract
-  informally; nothing is fabricated to fill the gap
-- `market_window` is a coarse deterministic label from the trade date (offseason /
-  near trade deadline / in-season), not a buyer/seller signal — that would need
-  standings-based logic not yet built
-- Output: `data/training/dataset.jsonl` (727 examples)
+- Prompt fields: trade date, type, position, age, height, season stats line,
+  qualitative context, `Traded with` (other elements sent in the same package —
+  full profile for players, tier for picks, raw text for future considerations),
+  and a coarse `Market context` (offseason / near trade deadline / in-season,
+  derived from the date — not a buyer/seller signal, that needs standings logic
+  not yet built)
+- `output` (the target) = the other side's return, same level of detail as
+  `traded_with`: full anonymized profile for players (not just a category — a
+  category-only target teaches little more than a classifier), picks with tier,
+  future considerations as text. Never generated by a model
+- Still absent: cap hit, structured contract status — no pipeline step computes
+  them deterministically; the research agent's prose mentions contract terms
+  informally, nothing is fabricated to fill the structured gap
+- Output: `data/training/dataset.jsonl` (727 examples, 9 missing age/height —
+  same 9 with no resolved `nhl_id`)
 
 **Fixed during assembly**: ~126/727 E6 profiles (17%) had come back in French despite
 the extraction system prompt requiring English — an unnoticed gap in `extract_profile.py`'s
