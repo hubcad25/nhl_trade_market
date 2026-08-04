@@ -193,10 +193,35 @@ Three things that must never come from the agent:
 - **Pick tiers** — 456 elements, from NHL standings at the trade date. No code yet
 - **The output JSON** — the target label, built from `data/normalized/trades.jsonl`
 
-### Step 8 — Build Training Dataset ❌
-- Assemble (input prompt, output JSON) pairs
-- Each player in a multi-player trade gets its own prompt
-- Co-traded assets appear as full profiles in the `traded_with` field
+### Step 8 — Build Training Dataset ✅
+- Script: `pipelines/build_training_dataset.py`
+- One example per player element among the 727 with a completed E6 profile (399
+  TSN-sourced trades, 2022-06 to present — the nhltradetracker extension to 2005 has
+  no E5 research pass yet, see caveat below)
+- `traded_with` = other elements sent in the same package (same `receives_key`,
+  other indices): full profile for players, compact tier for picks, raw text for
+  future considerations
+- `output` (the target) = the other side's return: picks with tier (from
+  `enrich_pick.py`), players reduced to `{type, position}` — no formula for player
+  value exists (unlike picks), so nothing is invented — future considerations as text
+- No cap hit, structured contract status, or `age_at_trade`: no pipeline step
+  computes them deterministically. The research agent's prose mentions age/contract
+  informally; nothing is fabricated to fill the gap
+- `market_window` is a coarse deterministic label from the trade date (offseason /
+  near trade deadline / in-season), not a buyer/seller signal — that would need
+  standings-based logic not yet built
+- Output: `data/training/dataset.jsonl` (727 examples)
+
+**Fixed during assembly**: ~126/727 E6 profiles (17%) had come back in French despite
+the extraction system prompt requiring English — an unnoticed gap in `extract_profile.py`'s
+prompt discipline. Manually translated in place (`data/raw/extractions/gpt-5.4-mini/v2/`
+cache, then `profiles.jsonl`/`profiles_deidentified.jsonl` rebuilt from cache). Also found
+one third-party name leak the existing `validate()` doesn't catch — it only checks the
+subject's own name and the return-side names, not other people mentioned in the prose
+(trade 5031 named a teammate). Redacted in place. **Follow-up needed**: `validate()` in
+`extract_profile.py` should reject any capitalized proper name beyond the documented
+false-positive set (countries, leagues, colleges, awards), not just the subject/return
+names — the current pass was a manual, one-time catch, not a rebuilt guardrail.
 
 ### Step 9 — Data Augmentation ❌
 - Slight stat variations (±10-15%) with coherent qualitative text adjustments
@@ -245,16 +270,21 @@ pipelines/
   normalize_trades.py       # step 2
   resolve_ids.py            # step 3
   classify_elements.py      # step 4
-  research_player.py        # step 5 (todo)
-  extract_profile.py        # step 6 (todo)
+  research_player.py        # step 5
+  extract_profile.py        # step 6
+  enrich_pick.py             # step 7 (picks)
+  enrich_stats.py            # step 7 (stats)
+  build_training_dataset.py # step 8
 data/                       # gitignored except manual/
   manual/                   # name_overrides.json — hand-fixed ID resolutions
   raw/tsn/                  # raw TSN API JSON
-  raw/briefs/               # cached agent research briefs (todo)
+  raw/briefs/               # cached agent research briefs
+  raw/extractions/          # cached E6 profile extractions
+  raw/picks/, raw/stats/    # cached E7 enrichment
   normalized/               # trades.jsonl
   resolved/                 # player_id_map.json, classified_elements.jsonl
-  enriched/                 # profiles.jsonl (todo)
-  training/                 # final (prompt, output) pairs (todo)
+  enriched/                 # profiles.jsonl, profiles_deidentified.jsonl, picks.jsonl, stats.jsonl
+  training/                 # dataset.jsonl — final (prompt, output) pairs
 docs/
   tsn_schema.md             # TSN API schema
   tsn_normalization_draft.md
