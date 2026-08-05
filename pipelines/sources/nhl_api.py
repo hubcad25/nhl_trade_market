@@ -37,8 +37,16 @@ _last_request_time = 0.0
 REQUEST_INTERVAL = 1.0  # secondes entre deux requêtes, tous appelants confondus
 
 
+class PlayerNotFoundError(Exception):
+    """404 permanent (ex: nhl_id d'un ancien format absent de l'API moderne) —
+    pas une erreur transitoire, ne pas retenter."""
+
+
 def nhl_get(url: str, retries: int = 8) -> dict:
-    """GET avec backoff exponentiel sur 429/403/erreurs transitoires, et rate limit global."""
+    """GET avec backoff exponentiel sur 429/403/erreurs transitoires, et rate limit global.
+    Un 404 échoue immédiatement (PlayerNotFoundError), sans retry : retenter avec
+    backoff exponentiel un identifiant qui n'existe pas ne fait qu'attendre plusieurs
+    minutes pour le même résultat."""
     global _last_request_time
     delay = 2.0
     for attempt in range(retries):
@@ -56,6 +64,8 @@ def nhl_get(url: str, retries: int = 8) -> dict:
                 log.warning("%s sur %s — nouvelle tentative dans %.1fs", r.status_code, url, wait)
                 time.sleep(wait)
                 continue
+            if r.status_code == 404:
+                raise PlayerNotFoundError(url)
             r.raise_for_status()
             return r.json()
         except requests.RequestException as e:
@@ -73,13 +83,17 @@ def _season_id_for_date(d: date) -> int:
 
 
 def get_player_bio(nhl_id: int) -> dict:
-    """Date de naissance et gabarit seuls, sans le reste du landing — aucun des deux
-    ne dépend de trade_date, contrairement à get_player_landing."""
+    """Date de naissance, gabarit et détails de repêchage — aucun des trois ne
+    dépend de trade_date, contrairement à get_player_landing."""
     data = nhl_get(f"https://api-web.nhle.com/v1/player/{nhl_id}/landing")
+    draft = data.get("draftDetails") or {}
     return {
         "birth_date": data.get("birthDate"),
         "height_in": data.get("heightInInches"),
         "weight_lb": data.get("weightInPounds"),
+        "draft_year": draft.get("year"),
+        "draft_round": draft.get("round"),
+        "draft_overall": draft.get("overallPick"),
     }
 
 

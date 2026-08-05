@@ -17,11 +17,12 @@ les 399 trades TSN de la passe de recherche E5, pas l'extension nhltradetracker
 Aucun nom de joueur ni d'équipe dans le prompt (cf. README « Key Design
 Decisions ») — seulement profiles_deidentified.jsonl est lu, jamais profiles.jsonl.
 
-Âge et taille viennent de data/enriched/bio.jsonl (E7b) — un appel NHL API par
-nhl_id unique, âge recalculé à trade_date localement (jamais un âge "actuel").
-Poids délibérément absent (varie dans le temps, cf. enrich_bio.py). Cap hit et
-statut contractuel structuré restent absents faute de source déterministe — le
-qualitatif research en parle en prose, mais rien n'est inventé pour combler.
+Âge, taille et repêchage viennent de data/enriched/bio.jsonl (E7b) — un appel
+NHL API par nhl_id unique, âge recalculé à trade_date localement (jamais un âge
+"actuel"). Poids délibérément absent (varie dans le temps, cf. enrich_bio.py).
+Cap hit et statut contractuel structuré restent absents faute de source
+déterministe — le qualitatif research en parle en prose, mais rien n'est
+inventé pour combler.
 
 Lit  data/enriched/profiles_deidentified.jsonl
      data/enriched/stats.jsonl
@@ -133,6 +134,15 @@ def format_height(height_in: int | None) -> str | None:
     return f"{feet}'{inches}\""
 
 
+def format_draft(bio_rec: dict | None) -> str | None:
+    if not bio_rec or not bio_rec.get("draft_year"):
+        return None
+    year, rnd, overall = bio_rec["draft_year"], bio_rec.get("draft_round"), bio_rec.get("draft_overall")
+    if rnd and overall:
+        return f"{year}, round {rnd}, {overall}th overall"
+    return f"{year}"
+
+
 def format_player_asset(profile: dict, element: dict, stats_rec: dict | None, bio_rec: dict | None) -> dict:
     """Représentation complète d'un actif joueur — utilisée pour le sujet du prompt,
     pour traded_with, ET pour le retour cible (même schéma, jamais de nom)."""
@@ -141,6 +151,7 @@ def format_player_asset(profile: dict, element: dict, stats_rec: dict | None, bi
         "position": POSITION_LABELS.get(element.get("position"), element.get("position")),
         "age": bio_rec["age_at_trade"] if bio_rec else None,
         "height": format_height(bio_rec["height_in"]) if bio_rec else None,
+        "draft": format_draft(bio_rec),
         "stats": format_stats_line(profile["type_classified"], stats_rec["stats"] if stats_rec else None),
         "context": profile["qualitative_summary"],
     }
@@ -231,6 +242,8 @@ def format_player_inline(a: dict) -> str:
         bits.append(f"age {a['age']}")
     if a.get("height"):
         bits.append(a["height"])
+    if a.get("draft"):
+        bits.append(f"drafted {a['draft']}")
     return " ".join(bits) + f" — {a.get('context', '')}"
 
 
@@ -241,6 +254,7 @@ def build_prompt(trade_date: str, subject: dict, traded_with: list[dict], phase:
         f"Position: {subject['position']}",
         f"Age: {subject['age'] if subject['age'] is not None else 'unknown'}",
         f"Height: {subject['height'] or 'unknown'}",
+        f"Draft: {subject['draft'] or 'undrafted/unknown'}",
         f"Stats: {subject['stats']}",
         f"Context: {subject['context']}",
     ]

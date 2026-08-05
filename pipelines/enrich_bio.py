@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-E7b — Âge au trade et gabarit (taille)
+E7b — Âge au trade, gabarit (taille) et repêchage
 
 Pour chaque élément joueur du scope wm9 (les 727 avec profil E6 complet) : âge à
-trade_date depuis la date de naissance NHL API, et taille (pouces). Un seul appel
-API par nhl_id unique — ni la date de naissance ni la taille ne dépendent du trade,
-et beaucoup de joueurs apparaissent dans plusieurs trades du dataset.
+trade_date depuis la date de naissance NHL API, taille (pouces), et détails de
+repêchage (année/ronde/rang au total, si drafté). Un seul appel API par nhl_id
+unique — aucun de ces champs ne dépend du trade, et beaucoup de joueurs
+apparaissent dans plusieurs trades du dataset.
 
 Poids délibérément omis : il varie dans le temps (contrairement à la taille adulte)
 et le landing NHL n'en donne qu'un instantané au moment de l'appel, pas à trade_date
@@ -64,7 +65,9 @@ def cached_bio(nhl_id: int) -> dict:
     path = BIO_CACHE_DIR / f"{nhl_id}.json"
     if path.exists():
         with open(path) as f:
-            return json.load(f)
+            bio = json.load(f)
+        if "draft_year" in bio:
+            return bio
     bio = get_player_bio(nhl_id)
     bio["nhl_id"] = nhl_id
     BIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,6 +115,9 @@ def main() -> None:
             "birth_date": bio["birth_date"],
             "age_at_trade": age_at(bio["birth_date"], rec["trade_date"]),
             "height_in": bio.get("height_in"),
+            "draft_year": bio.get("draft_year"),
+            "draft_round": bio.get("draft_round"),
+            "draft_overall": bio.get("draft_overall"),
         })
 
         if i % 100 == 0:
