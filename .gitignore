@@ -5,6 +5,7 @@ data/*
 !data/manual/
 data/manual/*
 !data/manual/name_overrides.json
+!data/manual/pick_owner_overrides.json
 .env
 
 ## Core latex/pdflatex auxiliary files:

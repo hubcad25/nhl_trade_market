@@ -215,18 +215,36 @@ labeled `original_owner: MTL`, but it was actually the Islanders' natural 2022
 standings-based tier estimate used Montreal's terrible 2021-22 season instead of
 the Islanders' mid-table one, producing "top 4" for what was actually pick #13).
 
-Fix applied: TSN's free-text `informations` field sometimes states the exact
-overall pick number and/or the true original team explicitly (editorial blurb, not
-structured data) — extracted via `build_pick_number_overrides`/
-`build_original_owner_overrides` in `enrich_pick.py` when unambiguous (side's pick
-count matches the count of numbers found). Covers 19/2179 pick numbers and 1/2179
-original owners confirmed with certainty — `pick["pick_number_source"]` and
-`pick["original_owner_source"]` mark which. The remaining ~99% still carry
-`original_owner_source: giving_team_assumption`, unverified. A general fix (replay
-all 2157 trades chronologically, track per-(team, round, year) holder) is possible
-whenever a team holds only one pick of that (round, year) at re-trade time — proven
-on the Dach case, since Montreal's own natural 2022 1st was never traded (used on
-Slafkovský) — but not built. Follow-up: `nhl_trade_market-4v9`.
+Fix applied, two layers:
+
+1. **TSN free text.** The `informations` field sometimes states the exact overall
+   pick number and/or the true original team explicitly (editorial blurb, not
+   structured data) — extracted via `build_pick_number_overrides`/
+   `build_original_owner_overrides` in `enrich_pick.py` when unambiguous (side's
+   pick count matches the count of numbers found). Covers 19/2179 pick numbers and
+   1/2179 original owners.
+2. **Manual research, round-1 picks in the wm9 training scope.** Of the 27
+   round-1 picks whose tier estimate actually depends on `original_owner` (i.e.
+   `pick_number_source == standings_formula`, not already exact from step 1),
+   3 parallel research passes (PuckPedia, CapWages, contemporary trade coverage)
+   checked all 27 — **6 were wrong (22%)**: trade 3155 labeled WSH, actually BOS
+   (WSH had gotten it from BOS days earlier in trade 2967); 3881 labeled CBJ,
+   actually LAK; 4126 labeled MTL, actually FLA (medium confidence); 4894 labeled
+   OTT, actually BOS (the pick went BOS→DET→OTT→back to BOS); 5007 labeled SJS,
+   actually VGK; 5115 labeled CAR, actually DAL. Recorded in
+   `data/manual/pick_owner_overrides.json`, applied via
+   `original_owner_source: manual_research` (highest-confidence tier, above
+   `informations_text`, above the unverified default).
+
+`pick["pick_number_source"]` and `pick["original_owner_source"]` mark which tier
+resolved each pick. Outside the round-1/wm9-scope check above, the remaining picks
+still carry `original_owner_source: giving_team_assumption`, unverified — that 22%
+error rate on a manually-checked sample is a reason to expect real errors there
+too, not a reason to assume they're fine. A general fix (replay all 2157 trades
+chronologically, track per-(team, round, year) holder) is possible whenever a team
+holds only one pick of that (round, year) at re-trade time — proven on the Dach
+case, since Montreal's own natural 2022 1st was never traded (used on Slafkovský)
+— but not built. Follow-up: `nhl_trade_market-4v9`.
 
 ### Step 8 — Build Training Dataset ✅
 - Script: `pipelines/build_training_dataset.py`

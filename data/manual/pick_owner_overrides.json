@@ -1,0 +1,26 @@
+{
+  "3155-team_one_receives-1": {
+    "original_owner": "BOS",
+    "note": "WSH had acquired this pick from BOS days earlier (trade 2967, Orlov/Hathaway) before re-trading it to TOR for Sandin/Gustafsson."
+  },
+  "3881-team_two_receives-0": {
+    "original_owner": "LAK",
+    "note": "CBJ had acquired this pick from LAK in the Gavrikov/Korpisalo-for-Quick trade (2023-03) before re-trading it to PHI for Provorov."
+  },
+  "4126-team_one_receives-0": {
+    "original_owner": "FLA",
+    "note": "MTL had acquired this pick from FLA in the Ben Chiarot trade (2022-03) before re-trading it to COL for Newhook. Medium confidence."
+  },
+  "4894-team_one_receives-2": {
+    "original_owner": "BOS",
+    "note": "Pick went BOS->DET (2023 Bertuzzi trade) -> OTT (2023 DeBrincat trade) -> back to BOS in this Ullmark trade."
+  },
+  "5007-team_two_receives-2": {
+    "original_owner": "VGK",
+    "note": "Conditional pick SJS sent to NSH in the Askarov trade originally belonged to VGK."
+  },
+  "5115-team_two_receives-1": {
+    "original_owner": "DAL",
+    "note": "Swap-right pick CAR sent to NYR; the swap right itself came from the Mikko Rantanen trade with DAL (2025-03), and the Dallas-owned pick was the one conveyed."
+  }
+}

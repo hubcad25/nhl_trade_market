@@ -186,11 +186,11 @@ def build_team_registry(trades: dict[int, dict]) -> list[dict]:
     return list(seen.values())
 
 
-def build_original_owner_overrides(trades: dict[int, dict], registry: list[dict]) -> dict[tuple, str]:
-    """{(trade_id, receives_key, element_index): short d'équipe} depuis un blurb
-    'originally belonging to TEAM' — s'applique seulement quand le côté receveur
-    n'a qu'un seul élément 'pick' (pas d'ambiguïté sur lequel)."""
-    overrides: dict[tuple, str] = {}
+def build_original_owner_overrides(trades: dict[int, dict], registry: list[dict]) -> dict[tuple, tuple[str, str]]:
+    """{(trade_id, receives_key, element_index): (short d'équipe, 'informations_text')}
+    depuis un blurb 'originally belonging to TEAM' — s'applique seulement quand le
+    côté receveur n'a qu'un seul élément 'pick' (pas d'ambiguïté sur lequel)."""
+    overrides: dict[tuple, tuple[str, str]] = {}
     for trade_id, trade in trades.items():
         info = trade.get("informations")
         if not info:
@@ -209,7 +209,25 @@ def build_original_owner_overrides(trades: dict[int, dict], registry: list[dict]
         for receives_key in ("team_one_receives", "team_two_receives"):
             pick_indices = [i for i, el in enumerate(trade.get(receives_key, [])) if el.get("type") == "pick"]
             if len(pick_indices) == 1:
-                overrides[(trade_id, receives_key, pick_indices[0])] = match
+                overrides[(trade_id, receives_key, pick_indices[0])] = (match, "informations_text")
+    return overrides
+
+
+MANUAL_OWNER_OVERRIDES_PATH = Path("data/manual/pick_owner_overrides.json")
+
+
+def load_manual_owner_overrides() -> dict[tuple, tuple[str, str]]:
+    """{(trade_id, receives_key, element_index): (short, 'manual_research')} — cas
+    trouvés par recherche web manuelle (issue 4v9), pas par le texte TSN. Fichier
+    data/manual/pick_owner_overrides.json, clé "trade_id-receives_key-element_index"."""
+    if not MANUAL_OWNER_OVERRIDES_PATH.exists():
+        return {}
+    with open(MANUAL_OWNER_OVERRIDES_PATH) as f:
+        raw = json.load(f)
+    overrides = {}
+    for key_str, entry in raw.items():
+        trade_id_str, receives_key, idx_str = key_str.rsplit("-", 2)
+        overrides[(int(trade_id_str), receives_key, int(idx_str))] = (entry["original_owner"], "manual_research")
     return overrides
 
 # Relocations de franchise dans la fenêtre couverte (2005-présent). Le classement
@@ -325,8 +343,11 @@ def enrich(
     key = (rec["trade_id"], rec["receives_key"], rec["element_index"])
 
     owner_hint = owner_overrides.get(key)
-    original_owner = owner_hint or rec["giving_team"]["short"]
-    original_owner_source = "informations_text" if owner_hint else "giving_team_assumption"
+    if owner_hint:
+        original_owner, original_owner_source = owner_hint
+    else:
+        original_owner = rec["giving_team"]["short"]
+        original_owner_source = "giving_team_assumption"
 
     number_hint = number_overrides.get(key)
     pick_number_source: str | None = None
@@ -394,9 +415,13 @@ def main() -> None:
     trades = load_trades()
     number_overrides = build_pick_number_overrides(trades)
     owner_overrides = build_original_owner_overrides(trades, build_team_registry(trades))
+    manual_overrides = load_manual_owner_overrides()
+    owner_overrides.update(manual_overrides)
     log.info(
-        "%d numéros de pick et %d équipes d'origine confirmés depuis le texte libre TSN",
+        "%d numéros de pick confirmés (texte TSN) ; %d équipes d'origine confirmées "
+        "(%d texte TSN + %d recherche manuelle, issue 4v9)",
         len(number_overrides), len(owner_overrides),
+        len(owner_overrides) - len(manual_overrides), len(manual_overrides),
     )
 
     PICKS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
