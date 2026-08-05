@@ -1,67 +1,58 @@
 #!/usr/bin/env python3
 """
-Modèle de valeur d'échange latente — équivalence révélée (issue kii)
+Modèle de valeur d'échange latente — équivalence révélée, hiérarchique bayésien (issue 1op)
 
-Un trade n'a pas de prix observé : on observe seulement des paires de paquets que
-deux DG ont jugés à peu près équivalents à trade_date. L'approche (type charts de
-valeur de picks NFL, Massey-Thaler) pose une fonction de valeur f(features) à
-coefficients inconnus et les ajuste pour que log f(côté A) ≈ log f(côté B) sur
-tous les trades du corpus où les deux côtés sont entièrement featurisables. Les
-coefficients ajustés SONT l'impact de chaque variable ; f() appliquée à un joueur
-EST la mesure de valeur.
+Remplace la V2 (régression ridge à estimation ponctuelle, scipy.optimize) par un
+vrai modèle à variable latente : value(e) = exp(w_famille · standardize(x(e)) +
+b_famille) reste la même forme fonctionnelle et la même contrainte d'équivalence
+(log V_A ≈ log V_B sur les trades entièrement featurisables des deux côtés), mais
+w_famille et b_famille sont maintenant des variables aléatoires avec distribution
+postérieure (MCMC, PyMC/NUTS) plutôt qu'un point optimal unique. Deux bénéfices
+directs, motivés par la nuit du 2026-08-04/05 (voir issue 1op pour le détail) :
 
-V1 était volontairement limité aux features déterministes déjà enrichies (âge,
-position, stats coupées à trade_date, tier de pick) — la régression d'équivalence
-a d'abord été validée sur ce qui était gratuit avant d'investir dans un pipeline
-d'extraction. V2 a testé les 8 features qualitatives structurées extraites des
-briefs (cap hit, statut contractuel, blessure, réserves scouting, climat
-organisationnel x2, unités spéciales — voir extract_value_features.py) sur les
-familles skater/goalie : PIRE que le déterministe seul sur holdout à tout niveau
-de régularisation (476 trades ne supportent pas 16 paramètres de plus). Recherche
-exhaustive sur les sous-ensembles, validée sur 10 splits train/holdout
-indépendants : un trio (injury_ordinal, contract_impasse_flag,
-reservation_ordinal — voir QUALI_FEATURES) gagne sur 9/10 splits. Les 5 autres
-features avaient des coefficients théoriquement défendables mais coûtaient plus
-de variance qu'elles n'apportaient de signal distinguable du bruit à 476 trades.
-C'est la version retenue en production.
+1. POOLING PARTIEL. skater et goalie partagent neuf features (age_c, height_in,
+   season_gp, career_gp_log, draft_overall_norm, undrafted, + les trois
+   QUALI_FEATURES) mais étaient ajustés en vase clos en V2 — goalie (poignée
+   d'éléments face à skater) n'avait aucune information de skater pour stabiliser
+   ses coefficients. Ici chaque feature partagée a un hyper-prior commun
+   (mu_f, sigma_f) dont skater ET goalie tirent leur coefficient : quand goalie
+   a peu de signal propre, son coefficient se rétrécit vers l'estimé (mieux
+   informé) de skater : pooling automatique, pas de recherche de sous-ensemble
+   feature-par-feature à la main. pick n'a aucune feature en commun avec les deux
+   autres familles — pas de hiérarchie à faire là, coefficients indépendants
+   comme en V2.
 
-Non inclus (pas construits) : cap hit au-delà de ce test (a nui, pas aidé, une
-fois inclus dans la régression — contrat structuré séparé reste l'issue i4e si
-jamais revisité), signal de contexte d'équipe / classement (get_standings, déjà
-branché pour ki3 mais pas utilisé ici — l'hypothèse acheteur/vendeur a été mise
-de côté).
+2. INCERTITUDE PAR PRÉDICTION. value(e) est maintenant une distribution
+   postérieure, pas un chiffre : chaque élément de values.jsonl porte une
+   moyenne, un écart-type et un intervalle de crédibilité à 90%, calculés en
+   appliquant CHAQUE tirage postérieur (mêmes tirages pour w, b ET l'ancre) à ses
+   features — pas une heuristique de distance après-coup. Cas concret qui motive
+   ça : Erik Karlsson (trade 4625) ressort premier à 3.18 en V2 sur la base d'une
+   saison de 101 points, statistiquement rare pour un défenseur de 33 ans — un
+   seul chiffre, aucun moyen d'exprimer que c'est une extrapolation risquée.
 
-Trois familles de features, chacune avec ses propres coefficients :
-  - skater  (nhl_skater + skater_prospect) : âge, taille, position, production
-    saison/carrière, repêchage
-  - goalie  (nhl_goalie + goalie_prospect)  : âge, taille, arrêts/GAA saison et
-    carrière, repêchage
-  - pick                                    : ronde, rang overall estimé, années
-    avant le repêchage, conditionnel ou non
+Les familles de features, la fonction featurize_*, la standardisation, l'univers
+utilisable et l'ancrage de l'échelle sont inchangés depuis la V2 — voir kii pour
+l'historique de sélection de features (recherche exhaustive de sous-ensembles,
+476 trades ne supportent pas plus de 16 paramètres qualitatifs — QUALI_FEATURES
+est le trio retenu). Ce script ne change QUE la méthode d'estimation.
 
-Un élément sans feature exploitable (future_consideration, unresolved, ou stats/bio
-manquantes) rend son CÔTÉ du trade infeasible pour l'ajustement — pas juste
-l'élément : on ne peut pas comparer un côté partiellement observé à l'autre. Le
-trade entier est alors exclu de l'ajustement (mais garde ses autres éléments
-ailleurs dans le pipeline, ceci ne touche que ce script).
+Ce script dépend de PyMC/ArviZ, installés dans ~/myenv (pas dans l'environnement
+du projet — dépendance lourde, isolée délibérément). Toujours l'exécuter avec :
 
-value(e) = exp(w_famille · standardize(x(e)) + b_famille) — toujours positif,
-sommable sur un côté. L'échelle globale n'est pas identifiée par construction (un
-même facteur multiplicatif appliqué à tous les intercepts laisse le résidu
-inchangé) : on ancre après coup sur un pick de fin de 1re ronde ~28e au total, 1 an
-avant le repêchage, non conditionnel = 1.0 unité, pour que les valeurs rapportées
-soient interprétables.
+  ~/myenv/bin/python pipelines/fit_trade_value.py
 
 Lit  data/resolved/classified_elements.jsonl
      data/enriched/stats.jsonl
      data/enriched/bio.jsonl
      data/enriched/picks.jsonl
-Écrit data/enriched/value_model.json  (coefficients, standardisation, ancre, diagnostics)
-      data/enriched/values.jsonl      (valeur par élément, univers utilisable seulement)
+     data/enriched/value_features.jsonl
+Écrit data/enriched/value_model.json  (résumés postérieurs, standardisation, ancre, diagnostics MCMC)
+      data/enriched/values.jsonl      (valeur moyenne + incertitude par élément, univers utilisable seulement)
 
 Usage:
-  python pipelines/fit_trade_value.py
-  python pipelines/fit_trade_value.py --lambda-reg 0.01 --seed 7
+  ~/myenv/bin/python pipelines/fit_trade_value.py
+  ~/myenv/bin/python pipelines/fit_trade_value.py --draws 2000 --tune 2000 --chains 4 --seed 7
 """
 
 from __future__ import annotations
@@ -74,7 +65,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import minimize
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -96,26 +86,17 @@ LEAGUE_AVG_SAVE_PCTG = 0.900
 LEAGUE_AVG_GAA = 3.00
 UNDRAFTED_OVERALL = 224.0  # ~fin de 7e ronde, ligue à 32 équipes
 
-# Dérivées de value_features.jsonl (extraction quali structurée, schéma détaillé
-# dans extract_value_features.py). Le jeu complet (8 features: cap hit x2, statut
-# FA, blessure, réserves, climat x2, unités spéciales) a été mesuré PIRE que le
-# déterministe seul sur holdout (0.533 vs 0.509, à tout niveau de régularisation
-# testé 0.01-0.8) — 476 trades ne supportent pas 16 paramètres de plus. Recherche
-# exhaustive sur les 2^8 sous-ensembles (voir kii, notes du 2026-08) : ce trio
-# gagne sur 9/10 splits train/holdout indépendants (0.5091 -> 0.5042 en moyenne),
-# pas juste sur le split par défaut — les 5 autres features (cap hit, agent libre
-# imminent, conflit ouvert, unités spéciales) coûtaient plus de variance qu'elles
-# n'apportaient de signal, malgré des coefficients théoriquement défendables.
+# Voir kii pour l'historique complet : ce trio de features qualitatives (extraites
+# par extract_value_features.py) gagne sur 9/10 splits train/holdout indépendants
+# contre le jeu complet de 8 (cap hit x2, statut FA, blessure, réserves, climat x2,
+# unités spéciales), qui coûtait plus de variance qu'il n'apportait de signal à
+# 476 trades sous estimation ponctuelle. Le pooling hiérarchique ici pourrait
+# changer ce calcul (moins besoin de "protéger" chaque paramètre individuellement)
+# mais on garde le même point de départ que la V2 pour isoler l'effet de la seule
+# méthode d'estimation — retester le jeu de 8 est un suivi possible, pas fait ici.
 QUALI_FEATURES = ["injury_ordinal", "contract_impasse_flag", "reservation_ordinal"]
 
 SKATER_FEATURES = [
-    # age_c_sq retiré (validé) : signe instable/à contre-sens (voir kii, notes
-    # d'août 2026) — le terme quadratique tentait de capter une baisse de valeur
-    # en fin de carrière, mais les joueurs de 31-34 ans qui se font VRAIMENT
-    # échanger sont pré-sélectionnés pour être encore bons (les autres sont
-    # coupés/rachetés, jamais échangés) — biais de sélection, pas du bruit. Le
-    # terme linéaire seul capture une pénalité d'âge monotone et stable (signe
-    # négatif consistant sur 10 splits), sans la fausse remontée en fin de courbe.
     "age_c", "height_in", "is_defense",
     "season_gp", "season_ppg", "season_ppg_x_defense", "career_gp_log", "career_ppg",
     "draft_overall_norm", "undrafted",
@@ -130,6 +111,19 @@ PICK_FEATURES = ["overall_estimate_log", "years_out", "is_conditional"]
 
 FAMILY_FEATURES = {"skater": SKATER_FEATURES, "goalie": GOALIE_FEATURES, "pick": PICK_FEATURES}
 FAMILIES = ["skater", "goalie", "pick"]
+
+# Features présentes dans plus d'une famille : reçoivent un hyper-prior commun
+# (mu_f, sigma_f) partagé entre les familles qui les utilisent — le mécanisme de
+# pooling partiel. Calculé automatiquement plutôt que codé en dur pour rester
+# cohérent si FAMILY_FEATURES change.
+_feature_to_families: dict[str, list[str]] = defaultdict(list)
+for _fam, _feats in FAMILY_FEATURES.items():
+    for _f in _feats:
+        _feature_to_families[_f].append(_fam)
+SHARED_FEATURES = sorted(f for f, fams in _feature_to_families.items() if len(fams) > 1)
+EXCLUSIVE_FEATURES = {
+    fam: [f for f in FAMILY_FEATURES[fam] if f not in SHARED_FEATURES] for fam in FAMILIES
+}
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -272,22 +266,7 @@ def featurize_pick(pick_rec: dict, trade_year: int) -> dict | None:
     return {
         "round": float(round_),
         "overall_estimate": overall_estimate,
-        # value = exp(w . x) avec ce terme donne overall^w — une décroissance en
-        # loi de puissance, la forme habituelle des charts de valeur de picks
-        # (les tout premiers rangs valent disproportionnellement plus), que le
-        # terme linéaire seul ne peut pas représenter. "round" et "overall_estimate"
-        # bruts restent dans le dict pour debug mais ne sont plus dans PICK_FEATURES
-        # (colinéaires avec ce terme — les garder tous les trois diluait le poids
-        # entre 3 variables quasi redondantes plutôt que de le concentrer).
         "overall_estimate_log": math.log(overall_estimate),
-        # 1/overall_estimate essayé pour une courbe encore plus convexe (le 1er
-        # choix ressortait à peine 2x au-dessus du dernier rang, trop plat) —
-        # abandonné : seulement 31 picks à overall<=5 dans tout le corpus,
-        # 1/overall explose précisément dans cette zone la moins peuplée, et le
-        # coefficient s'est mis à surapprendre sur cette poignée de points —
-        # au point de rendre pick #1 MOINS valorisé que pick #5 (non
-        # monotone). Le corpus n'a simplement pas assez de trades avec un pick
-        # de tout haut de repêchage pour contraindre un terme aussi sensible.
         "years_out": float(years_out),
         "is_conditional": 1.0 if pick.get("is_conditional") else 0.0,
     }
@@ -385,105 +364,180 @@ def to_std_vector(family: str, feats: dict, stand: dict) -> np.ndarray:
     return (raw - stand[family]["mean"]) / stand[family]["std"]
 
 
-def pack_trades_for_fit(trades: list[dict], stand: dict) -> list[dict]:
-    packed = []
-    for t in trades:
-        sides_std = []
-        for side in t["sides"]:
-            sides_std.append([(fam, to_std_vector(fam, feats, stand)) for fam, feats in side])
-        packed.append({"trade_id": t["trade_id"], "sides": sides_std})
+# ---------------------------------------------------------------------------
+# Assemblage vectorisé pour PyMC : chaque trade usable produit deux "côtés"
+# (rangée dans un array plat de côtés). Chaque élément appartient à une famille
+# et à un côté ; on construit, par famille, une matrice de design (n_elems_fam x
+# n_features_fam) et une matrice d'appartenance côté (n_sides x n_elems_fam) à
+# valeurs 0/1, pour que side_value_fam = M_fam @ exp(X_fam @ w_fam + b_fam) se
+# fasse en une multiplication matricielle plutôt qu'une boucle Python par trade
+# — indispensable pour que NUTS explore des milliers de fois sans ralentir.
+# ---------------------------------------------------------------------------
+
+def pack_for_model(trades: list[dict], stand: dict) -> dict:
+    n_sides = 2 * len(trades)
+    fam_rows: dict[str, list[np.ndarray]] = {fam: [] for fam in FAMILIES}
+    fam_side_idx: dict[str, list[int]] = {fam: [] for fam in FAMILIES}
+
+    for t_i, t in enumerate(trades):
+        for side_offset, side in enumerate(t["sides"]):
+            side_idx = 2 * t_i + side_offset
+            for family, feats in side:
+                fam_rows[family].append(to_std_vector(family, feats, stand))
+                fam_side_idx[family].append(side_idx)
+
+    packed = {"n_sides": n_sides, "n_trades": len(trades)}
+    for fam in FAMILIES:
+        n_feats = len(FAMILY_FEATURES[fam])
+        X = np.array(fam_rows[fam]) if fam_rows[fam] else np.zeros((0, n_feats))
+        idx = np.array(fam_side_idx[fam], dtype=int)
+        M = np.zeros((n_sides, len(idx)))
+        M[idx, np.arange(len(idx))] = 1.0
+        packed[fam] = {"X": X, "M": M}
     return packed
 
 
-def param_layout() -> dict:
-    """Offsets du vecteur de paramètres plat: pour chaque famille, len(features) poids + 1 biais."""
-    layout = {}
-    offset = 0
+def build_pymc_model(packed: dict):
+    import pymc as pm
+    import pytensor.tensor as pt
+
+    n_trades = packed["n_trades"]
+    coords = {fam: FAMILY_FEATURES[fam] for fam in FAMILIES}
+    coords["shared_feature"] = SHARED_FEATURES
+    coords["trade"] = np.arange(n_trades)
+
+    with pm.Model(coords=coords) as model:
+        # Hyper-priors pour les features partagées entre >=2 familles : le
+        # mécanisme de pooling partiel. mu_f = effet "générique" de la feature,
+        # sigma_f = à quel point les familles peuvent s'en écarter (petit sigma
+        # -> pooling fort -> goalie hérite presque du coefficient de skater ;
+        # grand sigma -> chaque famille garde son propre signal si les données
+        # le justifient).
+        mu_shared = pm.Normal("mu_shared", mu=0.0, sigma=1.0, dims="shared_feature")
+        sigma_shared = pm.HalfNormal("sigma_shared", sigma=0.5, dims="shared_feature")
+
+        w_by_family = {}
+        b_by_family = {}
+        for fam in FAMILIES:
+            feats = FAMILY_FEATURES[fam]
+            n_feats = len(feats)
+            w_slices = []
+            for f in feats:
+                if f in SHARED_FEATURES:
+                    j = SHARED_FEATURES.index(f)
+                    offset = pm.Normal(f"z_{fam}_{f}", mu=0.0, sigma=1.0)
+                    w_slices.append(mu_shared[j] + sigma_shared[j] * offset)
+                else:
+                    w_slices.append(pm.Normal(f"w_{fam}_{f}", mu=0.0, sigma=1.0))
+            w_by_family[fam] = pt.stack(w_slices) if n_feats else pt.zeros((0,))
+            b_by_family[fam] = pm.Normal(f"b_{fam}", mu=0.0, sigma=2.0)
+
+        side_value = pt.zeros(packed["n_sides"])
+        for fam in FAMILIES:
+            X, M = packed[fam]["X"], packed[fam]["M"]
+            if X.shape[0] == 0:
+                continue
+            elem_value = pt.exp(pt.dot(X, w_by_family[fam]) + b_by_family[fam])
+            side_value = side_value + pt.dot(M, elem_value)
+
+        log_side = pt.log(side_value)
+        log_side_a = log_side[0::2]
+        log_side_b = log_side[1::2]
+        residual = pm.Deterministic("residual", log_side_a - log_side_b, dims="trade")
+
+        sigma_obs = pm.HalfNormal("sigma_obs", sigma=1.0)
+        pm.Normal("resid_obs", mu=residual, sigma=sigma_obs, observed=np.zeros(n_trades), dims="trade")
+
+    return model, w_by_family, b_by_family
+
+
+def sample_model(model, draws: int, tune: int, chains: int, seed: int):
+    import pymc as pm
+
+    # PyTensor ne trouve pas de BLAS système à lier (numpy en a un via
+    # scipy-openblas64, mais dans un chemin pip privé que le compilateur C de
+    # PyTensor ne détecte pas) — le sampler NUTS par défaut de PyMC (compilé en
+    # C) tombe alors sur des produits matriciels non vectorisés, catastrophique
+    # (200 tirages n'ont pas terminé en 10+ minutes lors du smoke test). nutpie
+    # compile le graphe via Numba (JIT, indépendant de la liaison BLAS système)
+    # et implémente NUTS en Rust — évite complètement le problème.
+    with model:
+        idata = pm.sample(
+            draws=draws, tune=tune, chains=chains, cores=chains,
+            random_seed=seed, target_accept=0.9, progressbar=True,
+            nuts_sampler="nutpie",
+        )
+    return idata
+
+
+def posterior_diagnostics(idata) -> dict:
+    import arviz as az
+
+    summary = az.summary(idata, var_names=["mu_shared", "sigma_shared", "sigma_obs"] + [
+        v for v in idata.posterior.data_vars if v.startswith("w_") or v.startswith("b_") or v.startswith("z_")
+    ])
+    n_divergent = int(idata.sample_stats["diverging"].sum())
+    return {
+        "max_rhat": float(summary["r_hat"].max()),
+        "min_ess_bulk": float(summary["ess_bulk"].min()),
+        "n_divergences": n_divergent,
+    }
+
+
+def posterior_family_weights(idata, fam: str) -> np.ndarray:
+    """(n_draws_total, n_features) tirages postérieurs aplatis chaînes+draws pour
+    les poids d'une famille, dans l'ordre de FAMILY_FEATURES[fam]."""
+    post = idata.posterior
+    n_shared = {f: i for i, f in enumerate(SHARED_FEATURES)}
+    mu_shared = post["mu_shared"].values  # (chain, draw, shared_feature)
+    sigma_shared = post["sigma_shared"].values
+    n_chain, n_draw = mu_shared.shape[0], mu_shared.shape[1]
+    n_total = n_chain * n_draw
+
+    cols = []
+    for f in FAMILY_FEATURES[fam]:
+        if f in n_shared:
+            j = n_shared[f]
+            z = post[f"z_{fam}_{f}"].values.reshape(n_total)
+            mu = mu_shared[:, :, j].reshape(n_total)
+            sigma = sigma_shared[:, :, j].reshape(n_total)
+            cols.append(mu + sigma * z)
+        else:
+            cols.append(post[f"w_{fam}_{f}"].values.reshape(n_total))
+    return np.stack(cols, axis=1)
+
+
+def posterior_family_bias(idata, fam: str) -> np.ndarray:
+    post = idata.posterior
+    b = post[f"b_{fam}"].values
+    return b.reshape(b.shape[0] * b.shape[1])
+
+
+def rmse_at_point(packed: dict, w_point: dict, b_point: dict) -> float:
+    side_value = np.zeros(packed["n_sides"])
     for fam in FAMILIES:
-        n = len(FAMILY_FEATURES[fam])
-        layout[fam] = {"w_slice": slice(offset, offset + n), "b_index": offset + n}
-        offset += n + 1
-    layout["_total"] = offset
-    return layout
-
-
-def unpack_params(params: np.ndarray, layout: dict) -> dict:
-    out = {}
-    for fam in FAMILIES:
-        w = params[layout[fam]["w_slice"]]
-        b = params[layout[fam]["b_index"]]
-        out[fam] = (w, b)
-    return out
-
-
-def side_log_value(side: list[tuple], wb: dict) -> float:
-    total = 0.0
-    for fam, x_std in side:
-        w, b = wb[fam]
-        total += math.exp(float(np.dot(w, x_std)) + b)
-    return math.log(total)
-
-
-def residuals(params: np.ndarray, packed_trades: list[dict], layout: dict) -> np.ndarray:
-    wb = unpack_params(params, layout)
-    res = np.empty(len(packed_trades))
-    for i, t in enumerate(packed_trades):
-        side_a, side_b = t["sides"]
-        res[i] = side_log_value(side_a, wb) - side_log_value(side_b, wb)
-    return res
-
-
-def loss(params: np.ndarray, packed_trades: list[dict], layout: dict, lambda_reg: float) -> float:
-    r = residuals(params, packed_trades, layout)
-    reg = 0.0
-    wb = unpack_params(params, layout)
-    for fam in FAMILIES:
-        w, _b = wb[fam]
-        reg += float(np.dot(w, w))
-    return float(np.mean(r ** 2) + lambda_reg * reg)
-
-
-def fit(packed_trades: list[dict], layout: dict, lambda_reg: float) -> np.ndarray:
-    x0 = np.zeros(layout["_total"])
-    result = minimize(
-        loss, x0, args=(packed_trades, layout, lambda_reg),
-        method="L-BFGS-B", options={"maxiter": 2000},
-    )
-    if not result.success:
-        log.warning("optimisation non convergée proprement: %s", result.message)
-    return result.x
-
-
-def rmse(params: np.ndarray, packed_trades: list[dict], layout: dict) -> float:
-    if not packed_trades:
-        return float("nan")
-    r = residuals(params, packed_trades, layout)
-    return float(np.sqrt(np.mean(r ** 2)))
+        X, M = packed[fam]["X"], packed[fam]["M"]
+        if X.shape[0] == 0:
+            continue
+        elem_value = np.exp(X @ w_point[fam] + b_point[fam])
+        side_value += M @ elem_value
+    log_side = np.log(side_value)
+    residual = log_side[0::2] - log_side[1::2]
+    return float(np.sqrt(np.mean(residual ** 2)))
 
 
 def main() -> None:
-    global SKATER_FEATURES, GOALIE_FEATURES, FAMILY_FEATURES
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lambda-reg", type=float, default=0.01, help="pénalité L2 sur les poids (pas les biais)")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--draws", type=int, default=1500)
+    parser.add_argument("--tune", type=int, default=1500)
+    parser.add_argument("--chains", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--holdout-frac", type=float, default=0.15)
     parser.add_argument(
-        "--no-quali", action="store_true",
-        help="exclut QUALI_FEATURES (injury_ordinal, contract_impasse_flag, "
-             "reservation_ordinal) — pour comparer contre le déterministe seul. "
-             "Le jeu de 3 features actuel est validé (9/10 splits train/holdout "
-             "indépendants, 0.5091 -> 0.5042 en moyenne) et actif par défaut ; un "
-             "jeu de 8 features testé avant lui était pire à tout niveau de "
-             "régularisation (476 trades ne supportent pas 16 paramètres de plus) "
-             "— voir QUALI_FEATURES pour l'historique.",
+        "--ci", type=float, default=0.90,
+        help="largeur de l'intervalle de crédibilité rapporté dans values.jsonl (défaut 90%%)",
     )
     args = parser.parse_args()
-
-    if args.no_quali:
-        SKATER_FEATURES = [f for f in SKATER_FEATURES if f not in QUALI_FEATURES]
-        GOALIE_FEATURES = [f for f in GOALIE_FEATURES if f not in QUALI_FEATURES]
-        FAMILY_FEATURES = {"skater": SKATER_FEATURES, "goalie": GOALIE_FEATURES, "pick": PICK_FEATURES}
 
     trades, diag = build_universe()
     log.info(
@@ -495,56 +549,79 @@ def main() -> None:
         return
 
     stand = standardize_families(trades)
-    packed = pack_trades_for_fit(trades, stand)
-    layout = param_layout()
 
     rng = np.random.default_rng(args.seed)
-    order = rng.permutation(len(packed))
-    n_holdout = max(1, int(len(packed) * args.holdout_frac))
+    order = rng.permutation(len(trades))
+    n_holdout = max(1, int(len(trades) * args.holdout_frac))
     holdout_idx = set(order[:n_holdout].tolist())
-    train_split = [packed[i] for i in range(len(packed)) if i not in holdout_idx]
-    holdout_split = [packed[i] for i in range(len(packed)) if i in holdout_idx]
+    train_trades = [trades[i] for i in range(len(trades)) if i not in holdout_idx]
+    holdout_trades = [trades[i] for i in range(len(trades)) if i in holdout_idx]
 
-    log.info("ajustement diagnostic: %d trades train / %d holdout", len(train_split), len(holdout_split))
-    params_diag = fit(train_split, layout, args.lambda_reg)
-    train_rmse = rmse(params_diag, train_split, layout)
-    holdout_rmse = rmse(params_diag, holdout_split, layout)
-    log.info("résidu log-ratio — train RMSE: %.4f, holdout RMSE: %.4f", train_rmse, holdout_rmse)
+    log.info("ajustement diagnostic (MCMC): %d trades train / %d holdout", len(train_trades), len(holdout_trades))
+    packed_train = pack_for_model(train_trades, stand)
+    model_train, w_train, b_train = build_pymc_model(packed_train)
+    idata_train = sample_model(model_train, args.draws, args.tune, args.chains, args.seed)
+    diag_stats = posterior_diagnostics(idata_train)
+    log.info(
+        "diagnostic MCMC (train): max r_hat=%.3f, min ess_bulk=%.0f, divergences=%d",
+        diag_stats["max_rhat"], diag_stats["min_ess_bulk"], diag_stats["n_divergences"],
+    )
+
+    w_point_train = {fam: posterior_family_weights(idata_train, fam).mean(axis=0) for fam in FAMILIES}
+    b_point_train = {fam: posterior_family_bias(idata_train, fam).mean() for fam in FAMILIES}
+    train_rmse = rmse_at_point(packed_train, w_point_train, b_point_train)
+    packed_holdout = pack_for_model(holdout_trades, stand)
+    holdout_rmse = rmse_at_point(packed_holdout, w_point_train, b_point_train)
+    log.info("résidu log-ratio (moyenne postérieure) — train RMSE: %.4f, holdout RMSE: %.4f", train_rmse, holdout_rmse)
     if holdout_rmse > 1.5 * train_rmse:
         log.warning(
-            "holdout RMSE nettement > train RMSE (%.4f vs %.4f) — signe de surapprentissage, "
-            "envisager d'augmenter --lambda-reg", holdout_rmse, train_rmse,
+            "holdout RMSE nettement > train RMSE (%.4f vs %.4f) — signe de surapprentissage malgré le pooling",
+            holdout_rmse, train_rmse,
         )
 
-    log.info("ajustement final sur les %d trades utilisables au complet", len(packed))
-    params_full = fit(packed, layout, args.lambda_reg)
-    full_rmse = rmse(params_full, packed, layout)
-    log.info("résidu log-ratio — full-fit RMSE: %.4f", full_rmse)
+    log.info("ajustement final (MCMC) sur les %d trades utilisables au complet", len(trades))
+    packed_full = pack_for_model(trades, stand)
+    model_full, w_full, b_full = build_pymc_model(packed_full)
+    idata_full = sample_model(model_full, args.draws, args.tune, args.chains, args.seed + 1)
+    diag_stats_full = posterior_diagnostics(idata_full)
+    log.info(
+        "diagnostic MCMC (full): max r_hat=%.3f, min ess_bulk=%.0f, divergences=%d",
+        diag_stats_full["max_rhat"], diag_stats_full["min_ess_bulk"], diag_stats_full["n_divergences"],
+    )
 
-    wb_full = unpack_params(params_full, layout)
+    w_draws = {fam: posterior_family_weights(idata_full, fam) for fam in FAMILIES}  # (n_draws, n_feats)
+    b_draws = {fam: posterior_family_bias(idata_full, fam) for fam in FAMILIES}  # (n_draws,)
+    w_mean = {fam: w_draws[fam].mean(axis=0) for fam in FAMILIES}
+    w_sd = {fam: w_draws[fam].std(axis=0) for fam in FAMILIES}
+    b_mean = {fam: float(b_draws[fam].mean()) for fam in FAMILIES}
+    b_sd = {fam: float(b_draws[fam].std()) for fam in FAMILIES}
+    full_rmse = rmse_at_point(packed_full, w_mean, b_mean)
+    log.info("résidu log-ratio (moyenne postérieure) — full-fit RMSE: %.4f", full_rmse)
 
     anchor_overall = 28.0  # fin de 1re ronde — repère plus lisible qu'un pick de 3e ronde
-    anchor_feats = {
-        "overall_estimate_log": math.log(anchor_overall),
-        "years_out": 1.0,
-        "is_conditional": 0.0,
-    }
+    anchor_feats = {"overall_estimate_log": math.log(anchor_overall), "years_out": 1.0, "is_conditional": 0.0}
     anchor_std = to_std_vector("pick", anchor_feats, stand)
-    w_pick, b_pick = wb_full["pick"]
-    anchor_raw_value = math.exp(float(np.dot(w_pick, anchor_std)) + b_pick)
+    anchor_draws = np.exp(w_draws["pick"] @ anchor_std + b_draws["pick"])  # (n_draws,)
+    anchor_mean = float(anchor_draws.mean())
 
-    print("\n=== Coefficients (par écart-type standardisé; exp(w) = facteur multiplicatif de valeur) ===")
+    print("\n=== Coefficients (moyenne postérieure ± écart-type; par écart-type standardisé) ===")
     for fam in FAMILIES:
-        w, b = wb_full[fam]
-        print(f"\n-- {fam} (biais brut={b:.3f}) --")
-        rows = sorted(zip(FAMILY_FEATURES[fam], w), key=lambda kv: -abs(kv[1]))
-        for name, coef in rows:
-            print(f"  {name:22s} w={coef:+.3f}  facteur/écart-type={math.exp(coef):.3f}x")
+        print(f"\n-- {fam} (biais={b_mean[fam]:+.3f} ± {b_sd[fam]:.3f}) --")
+        rows = sorted(zip(FAMILY_FEATURES[fam], w_mean[fam], w_sd[fam]), key=lambda kv: -abs(kv[1]))
+        for name, mean, sd in rows:
+            shared_tag = " [pooled]" if name in SHARED_FEATURES else ""
+            print(f"  {name:22s} w={mean:+.3f} ± {sd:.3f}  facteur/écart-type={math.exp(mean):.3f}x{shared_tag}")
+
+    print("\n-- hyper-priors (features partagées skater/goalie, pooling partiel) --")
+    mu_shared_draws = idata_full.posterior["mu_shared"].values.reshape(-1, len(SHARED_FEATURES))
+    sigma_shared_draws = idata_full.posterior["sigma_shared"].values.reshape(-1, len(SHARED_FEATURES))
+    for j, f in enumerate(SHARED_FEATURES):
+        print(f"  {f:22s} mu={mu_shared_draws[:, j].mean():+.3f}  sigma={sigma_shared_draws[:, j].mean():.3f}")
 
     print(f"\nAncre de normalisation: pick de fin de 1re ronde, ~28e au total, 1 an avant repêchage, non conditionnel = 1.0 unité")
-    print(f"(valeur brute de l'ancre: {anchor_raw_value:.4f})")
+    print(f"(valeur brute moyenne de l'ancre: {anchor_mean:.4f})")
 
-    write_values_output(trades, wb_full, stand, anchor_raw_value)
+    write_values_output(trades, w_draws, b_draws, anchor_draws, stand, args.ci)
 
     model_out = {
         "families": {
@@ -552,25 +629,41 @@ def main() -> None:
                 "features": FAMILY_FEATURES[fam],
                 "mean": stand[fam]["mean"].tolist(),
                 "std": stand[fam]["std"].tolist(),
-                "weight": wb_full[fam][0].tolist(),
-                "bias": float(wb_full[fam][1]),
+                "weight_mean": w_mean[fam].tolist(),
+                "weight_sd": w_sd[fam].tolist(),
+                "bias_mean": b_mean[fam],
+                "bias_sd": b_sd[fam],
             }
             for fam in FAMILIES
         },
+        "shared_features": {
+            f: {
+                "mu_mean": float(mu_shared_draws[:, j].mean()),
+                "mu_sd": float(mu_shared_draws[:, j].std()),
+                "sigma_mean": float(sigma_shared_draws[:, j].mean()),
+            }
+            for j, f in enumerate(SHARED_FEATURES)
+        },
         "age_center": AGE_CENTER,
-        "lambda_reg": args.lambda_reg,
         "anchor": {
             "description": "pick de fin de 1re ronde, ~28e au total, 1 an avant le repêchage, non conditionnel",
             "features": anchor_feats,
-            "raw_value": anchor_raw_value,
+            "raw_value_mean": anchor_mean,
+            "raw_value_sd": float(anchor_draws.std()),
+        },
+        "mcmc": {
+            "draws": args.draws, "tune": args.tune, "chains": args.chains, "seed": args.seed,
         },
         "diagnostics": {
             **diag,
-            "n_trades_train": len(train_split),
-            "n_trades_holdout": len(holdout_split),
+            "n_trades_train": len(train_trades),
+            "n_trades_holdout": len(holdout_trades),
             "train_rmse": train_rmse,
             "holdout_rmse": holdout_rmse,
             "full_fit_rmse": full_rmse,
+            "mcmc_train": diag_stats,
+            "mcmc_full": diag_stats_full,
+            "sigma_obs_mean": float(idata_full.posterior["sigma_obs"].values.mean()),
         },
     }
     MODEL_OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -579,10 +672,14 @@ def main() -> None:
     log.info("modèle écrit -> %s", MODEL_OUT_PATH)
 
 
-def write_values_output(trades: list[dict], wb_full: dict, stand: dict, anchor_raw_value: float) -> None:
+def write_values_output(
+    trades: list[dict], w_draws: dict, b_draws: dict, anchor_draws: np.ndarray, stand: dict, ci: float,
+) -> None:
     """Réassocie chaque élément featurisé à ses clés (trade_id/receives_key/element_index)
-    et son type d'origine pour écrire values.jsonl. Refait la featurisation avec les clés
-    conservées plutôt que de complexifier build_universe() avec un deuxième format de retour."""
+    et son type d'origine pour écrire values.jsonl. Chaque tirage postérieur (même
+    indexation que anchor_draws, pour que la normalisation préserve la corrélation
+    tirage-par-tirage plutôt que de diviser par une moyenne) donne une valeur brute ;
+    on rapporte moyenne, écart-type et intervalle de crédibilité de la valeur normalisée."""
     elements = load_jsonl(CLASSIFIED_PATH)
     stats_by_key = {key_of(r): r for r in load_jsonl(STATS_PATH)}
     bio_by_key = {key_of(r): r for r in load_jsonl(BIO_PATH)}
@@ -595,6 +692,7 @@ def write_values_output(trades: list[dict], wb_full: dict, stand: dict, anchor_r
         if e["trade_id"] in usable_trade_ids:
             by_trade[e["trade_id"]].append(e)
 
+    lo_q, hi_q = (1 - ci) / 2, 1 - (1 - ci) / 2
     rows = []
     for trade_id, elems in by_trade.items():
         trade_year = int(elems[0]["trade_date"][:4])
@@ -615,16 +713,20 @@ def write_values_output(trades: list[dict], wb_full: dict, stand: dict, anchor_r
             if feats is None:
                 continue
             x_std = to_std_vector(family, feats, stand)
-            w, b = wb_full[family]
-            raw_value = math.exp(float(np.dot(w, x_std)) + b)
+            raw_draws = np.exp(w_draws[family] @ x_std + b_draws[family])  # (n_draws,)
+            normalized_draws = raw_draws / anchor_draws
             rows.append({
                 "trade_id": trade_id,
                 "receives_key": e["receives_key"],
                 "element_index": e["element_index"],
                 "type_classified": t,
                 "family": family,
-                "raw_value": raw_value,
-                "normalized_value": raw_value / anchor_raw_value,
+                "raw_value_mean": float(raw_draws.mean()),
+                "normalized_value_mean": float(normalized_draws.mean()),
+                "normalized_value_sd": float(normalized_draws.std()),
+                "normalized_value_ci_low": float(np.quantile(normalized_draws, lo_q)),
+                "normalized_value_ci_high": float(np.quantile(normalized_draws, hi_q)),
+                "ci_width": ci,
             })
 
     VALUES_OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
