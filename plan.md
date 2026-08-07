@@ -410,6 +410,25 @@ Jack Eichel (trade_id fictif 999999, section précédente) avait été écrit da
 même dossier au moment du test — retiré avant de fermer cette étape, il ne fait
 pas partie du corpus réel.
 
+### Correction de coût — la facture réelle contredit l'estimation par tokens
+
+Le chiffre de ~12,7 $ ci-dessus vient de `PRICES_PER_M` dans `research_player.py`,
+qui ne tarife que les tokens d'entrée/sortie déclarés par l'API. La réserve posée
+plus haut («&nbsp;l'absence d'un compteur public n'est pas une preuve de gratuité&nbsp;»)
+s'est confirmée : la facture Azure réelle pour la passe complète est de l'ordre de
+**300 $+**, pas 12,7 $. L'outil `web_search` (Bing, hébergé côté Azure OpenAI) est
+donc bien facturé séparément, par un compteur non exposé dans l'API de prix
+publique — l'estimation par tokens sous-comptait d'un ordre de grandeur.
+
+**Conséquence pour `b7e`** : relancer `research_player.py` sur un sous-ensemble,
+même petit, reste coûteux au prorata des recherches Bing effectuées, pas seulement
+des tokens. Pour le sous-ensemble ciblé de trades élite (30-80 éléments), la
+recherche se fait plutôt directement dans Claude Code (`WebSearch`/`WebFetch`),
+en réutilisant le protocole du prompt v6 (rubriques, discipline de sourçage,
+interdiction des sources d'annonce de transaction) mais sans passer par l'API
+Azure — et le résultat est écrit à la main au format `data/raw/briefs/` pour
+rester compatible avec `extract_profile.py`.
+
 **Prochaine étape : lecture manuelle d'un échantillon plus large (issue c4z)**
 avant d'attaquer l'extraction (e3f). La passe complète n'a pas été relue en
 entier — seuls les 10 cas du pilote et quelques échantillons ponctuels

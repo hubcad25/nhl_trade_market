@@ -45,6 +45,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 BRIEFS_DIR = Path("data/raw/briefs")
+# Surchargeable via --source-model/--source-version pour traiter des briefs venus
+# d'une autre source E5 (ex. claude-sonnet-5/v6 pour le sous-ensemble élite, issue
+# b7e) sans perdre les stats déjà calculées pour gpt-5.4-mini/v6 — voir merge dans
+# main(), qui réassemble stats.jsonl depuis TOUT le cache disque, pas seulement le
+# scope du run courant.
 SOURCE_MODEL = "gpt-5.4-mini"
 SOURCE_PROMPT_VERSION = "v6"
 
@@ -117,7 +122,19 @@ def main() -> None:
     ap.add_argument("--limit", type=int)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument(
+        "--source-model", default=SOURCE_MODEL,
+        help="dossier data/raw/briefs/{source-model}/{source-version}/ à lire (défaut: gpt-5.4-mini)",
+    )
+    ap.add_argument(
+        "--source-version", default=SOURCE_PROMPT_VERSION,
+        help="version de prompt E5 des briefs à lire (défaut: v6)",
+    )
     args = ap.parse_args()
+
+    global SOURCE_MODEL, SOURCE_PROMPT_VERSION
+    SOURCE_MODEL = args.source_model
+    SOURCE_PROMPT_VERSION = args.source_version
 
     briefs = load_briefs(args.limit)
     classified = load_classified_index()
@@ -154,13 +171,27 @@ def main() -> None:
                 if done % 100 == 0:
                     log.info("Progress: %d/%d", done, len(work))
 
+    # Réassemble stats.jsonl depuis TOUT le cache disque, pas seulement le scope du
+    # run courant (SOURCE_MODEL/SOURCE_PROMPT_VERSION) — sinon un run scopé à une
+    # autre source de briefs écraserait silencieusement les stats déjà calculées
+    # pour les autres. trade_id suffit à dédupliquer (TSN et nhltradetracker ne se
+    # chevauchent jamais).
+    merged: dict[tuple, dict] = {}
+    for path in STATS_CACHE_DIR.glob("*.json"):
+        with open(path) as f:
+            r = json.load(f)
+        merged[(r["trade_id"], r["receives_key"], r["element_index"])] = r
+    for r in results:
+        merged[(r["trade_id"], r["receives_key"], r["element_index"])] = r
+
+    all_results = sorted(merged.values(), key=lambda r: (r["trade_id"], r["receives_key"], r["element_index"]))
     STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    results.sort(key=lambda r: (r["trade_id"], r["receives_key"], r["element_index"]))
     with open(STATS_PATH, "w") as out:
-        for r in results:
+        for r in all_results:
             out.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    log.info("Terminé : %d/%d stats écrites -> %s", len(results), len(work), STATS_PATH)
+    log.info("Terminé : %d/%d nouvelles stats (%d au total dans le cache) -> %s",
+              len(results), len(work), len(all_results), STATS_PATH)
 
 
 if __name__ == "__main__":

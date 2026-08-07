@@ -44,6 +44,10 @@ EXTRACTIONS_DIR = Path("data/raw/extractions")
 TRADES_PATH = Path("data/normalized/trades.jsonl")
 PROFILES_PATH = Path("data/enriched/profiles.jsonl")
 
+# Modèle/version source des briefs E5 à lire — surchargeable via --source-model
+# pour absorber des briefs produits hors du script research_player.py (ex. recherche
+# faite par Claude Code sur un sous-ensemble ciblé, issue b7e), tant qu'ils respectent
+# le même schéma de fichier sous data/raw/briefs/{model}/{version}/.
 SOURCE_MODEL = "gpt-5.4-mini"
 SOURCE_PROMPT_VERSION = "v6"
 
@@ -354,12 +358,23 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--model", default=MODEL)
     ap.add_argument(
+        "--source-model", default=SOURCE_MODEL,
+        help="dossier data/raw/briefs/{source-model}/{source-version}/ à lire (défaut: gpt-5.4-mini)",
+    )
+    ap.add_argument(
+        "--source-version", default=SOURCE_PROMPT_VERSION,
+        help="version de prompt E5 des briefs à lire (défaut: v6)",
+    )
+    ap.add_argument(
         "--revalidate", action="store_true",
         help="ne rappelle pas l'API — réapplique validate() au cache et reconstruit profiles.jsonl",
     )
     args = ap.parse_args()
 
     model = args.model
+    global SOURCE_MODEL, SOURCE_PROMPT_VERSION
+    SOURCE_MODEL = args.source_model
+    SOURCE_PROMPT_VERSION = args.source_version
 
     if args.revalidate:
         trades = load_trades()
